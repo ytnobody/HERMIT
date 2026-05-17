@@ -27,6 +27,7 @@ linters:
         - (*os.Process).Kill
         - (*encoding/json.Encoder).Encode
         - fmt.Fprint
+        - (net/http.ResponseWriter).Write
     govet:
       enable-all: false
 

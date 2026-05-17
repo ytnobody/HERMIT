@@ -8,8 +8,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/git"
+	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/risk"
 )

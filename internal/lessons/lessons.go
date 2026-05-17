@@ -22,9 +22,9 @@ const (
 
 // ScoreInput holds the signals used to score an issue's instruction quality.
 type ScoreInput struct {
-	PRRiskLevel    string // "HIGH", "MEDIUM", "LOW"
-	CIWasFailing   bool
-	HasMultiplePRs bool
+	PRRiskLevel      string // "HIGH", "MEDIUM", "LOW"
+	CIWasFailing     bool
+	HasMultiplePRs   bool
 	HasClarification bool
 }
 

@@ -166,6 +166,7 @@ func cmdUpgrade() {
 	asset := findAsset(release.Assets, name)
 	if asset == nil {
 		fatal(fmt.Sprintf("no binary asset found for %s in release %s", name, release.TagName))
+		return
 	}
 
 	fmt.Printf("Downloading %s...\n", asset.BrowserDownloadURL)
