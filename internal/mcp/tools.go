@@ -249,4 +249,29 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
+
+	s.AddTool(
+		mcp.NewTool("review_pr",
+			mcp.WithDescription("Posts a structured automated review comment on a PR based on static analysis of the diff"),
+			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			num, err := req.RequireInt("pr_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			comment, err := client.ReviewPR(num)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if err := client.PostComment(num, comment); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, _ := json.Marshal(map[string]any{"pr_number": num, "comment_posted": true})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
 }
