@@ -30,6 +30,30 @@ type Config struct {
 		MaxEngineers int    `toml:"max_engineers"`
 		Language     string `toml:"language"`
 	} `toml:"agent"`
+	Model struct {
+		Superintendent string `toml:"superintendent"`
+		Engineer       string `toml:"engineer"`
+	} `toml:"model"`
+}
+
+// ModelPreset defines superintendent/engineer model combinations.
+type ModelPreset struct {
+	Superintendent string
+	Engineer       string
+	Description    string
+}
+
+var modelPresets = map[string]ModelPreset{
+	"claude": {
+		Superintendent: "claude-sonnet-4-5",
+		Engineer:       "claude-sonnet-4-5",
+		Description:    "Sonnet for both Superintendent and Engineer (balanced)",
+	},
+	"claude-cheap": {
+		Superintendent: "claude-sonnet-4-5",
+		Engineer:       "claude-haiku-4-5",
+		Description:    "Sonnet for Superintendent, Haiku for Engineers (cost-optimized)",
+	},
 }
 
 func main() {
@@ -50,6 +74,16 @@ func main() {
 		cmdResume()
 	case "status":
 		cmdStatus()
+	case "use":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: hermit use <preset>")
+			fmt.Fprintln(os.Stderr, "Available presets:")
+			for name, p := range modelPresets {
+				fmt.Fprintf(os.Stderr, "  %-20s %s\n", name, p.Description)
+			}
+			os.Exit(1)
+		}
+		cmdUse(os.Args[2])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		usage()
@@ -58,7 +92,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status>")
+	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status|use>")
 }
 
 const pauseFile = ".hermit-paused"
@@ -89,6 +123,50 @@ func cmdStatus() {
 	} else {
 		fmt.Println("▶  running")
 	}
+}
+
+func cmdUse(presetName string) {
+	preset, ok := modelPresets[presetName]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset %q\n", presetName)
+		fmt.Fprintln(os.Stderr, "Available presets:")
+		for name, p := range modelPresets {
+			fmt.Fprintf(os.Stderr, "  %-20s %s\n", name, p.Description)
+		}
+		os.Exit(1)
+	}
+
+	const harnessFile = "harness.toml"
+	data, err := os.ReadFile(harnessFile)
+	if err != nil {
+		fatal("failed to read harness.toml: " + err.Error())
+	}
+
+	var cfg map[string]any
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		fatal("failed to parse harness.toml: " + err.Error())
+	}
+
+	modelSection, _ := cfg["model"].(map[string]any)
+	if modelSection == nil {
+		modelSection = make(map[string]any)
+	}
+	modelSection["superintendent"] = preset.Superintendent
+	modelSection["engineer"] = preset.Engineer
+	cfg["model"] = modelSection
+
+	f, err := os.Create(harnessFile)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer f.Close()
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		fatal("failed to write harness.toml: " + err.Error())
+	}
+
+	fmt.Printf("✓ preset %q を適用しました\n", presetName)
+	fmt.Printf("  superintendent: %s\n", preset.Superintendent)
+	fmt.Printf("  engineer:       %s\n", preset.Engineer)
 }
 
 func githubToken() string {
@@ -205,13 +283,33 @@ func cmdInit() {
 		maxEng = 4
 	}
 
-	type tmplData struct {
-		Owner        string
-		Repo         string
-		Language     string
-		MaxEngineers int
+	fmt.Println("Available model presets:")
+	for name, p := range modelPresets {
+		fmt.Printf("  %-20s %s\n", name, p.Description)
 	}
-	data := tmplData{Owner: owner, Repo: repo, Language: lang, MaxEngineers: maxEng}
+	presetName := promptDefault(sc, "Model preset (default: claude): ", "claude")
+	preset, ok := modelPresets[presetName]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset %q, using 'claude'\n", presetName)
+		preset = modelPresets["claude"]
+	}
+
+	type tmplData struct {
+		Owner               string
+		Repo                string
+		Language            string
+		MaxEngineers        int
+		SuperintendentModel string
+		EngineerModel       string
+	}
+	data := tmplData{
+		Owner:               owner,
+		Repo:                repo,
+		Language:            lang,
+		MaxEngineers:        maxEng,
+		SuperintendentModel: preset.Superintendent,
+		EngineerModel:       preset.Engineer,
+	}
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
 	writeTemplate("templates/CLAUDE.md.tmpl", "CLAUDE.md", struct {
