@@ -205,6 +205,28 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 	)
 
 	s.AddTool(
+		mcp.NewTool("list_prs",
+			mcp.WithDescription("Returns a list of open pull requests. Optionally filter by issue number."),
+			mcp.WithNumber("issue_number", mcp.Description("If provided, only return PRs referencing this Issue number (optional)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			issueNum := req.GetInt("issue_number", 0)
+			prs, err := client.ListOpenPRs(issueNum)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(prs)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
 		mcp.NewTool("get_lessons",
 			mcp.WithDescription("Returns a list of lessons learned from past failures. The Superintendent should consult this at the start of each patrol to avoid repeating the same mistakes."),
 		),
