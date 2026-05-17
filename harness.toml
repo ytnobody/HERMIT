@@ -1,0 +1,7 @@
+[github]
+owner = "ytnobody"
+repo  = "HERMIT"
+
+[agent]
+max_engineers = 4
+language      = "ja"
