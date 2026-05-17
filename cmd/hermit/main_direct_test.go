@@ -114,6 +114,9 @@ func TestMainSwitch_Init(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "harness.toml")); err != nil {
 		t.Error("harness.toml not created via main init")
 	}
+	if _, err := os.Stat(filepath.Join(dir, ".github", "ISSUE_TEMPLATE", "hermit-task.md")); err != nil {
+		t.Error(".github/ISSUE_TEMPLATE/hermit-task.md not created via main init")
+	}
 }
 
 func TestMainSwitch_Serve(t *testing.T) {

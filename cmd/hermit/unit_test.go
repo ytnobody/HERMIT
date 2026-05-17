@@ -288,6 +288,54 @@ func TestWriteTemplate_MissingTemplate(t *testing.T) {
 	t.Fatalf("expected non-zero exit, got: %v", err)
 }
 
+// --- writeIssueTemplate ---
+
+func TestWriteIssueTemplate_CreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	if err := writeIssueTemplate(); err != nil {
+		t.Fatalf("writeIssueTemplate: %v", err)
+	}
+
+	outPath := filepath.Join(dir, ".github", "ISSUE_TEMPLATE", "hermit-task.md")
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("hermit-task.md not created: %v", err)
+	}
+	content := string(data)
+	for _, section := range []string{"Summary", "Background", "Acceptance Criteria", "Technical Notes", "Out of Scope"} {
+		if !strings.Contains(content, section) {
+			t.Errorf("hermit-task.md missing section %q", section)
+		}
+	}
+	if !strings.Contains(content, "HERMIT Task") {
+		t.Errorf("hermit-task.md missing HERMIT Task front matter")
+	}
+}
+
+func TestWriteIssueTemplate_DirectoryAlreadyExists(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	// Pre-create the directory to ensure MkdirAll handles existing dirs gracefully.
+	if err := os.MkdirAll(filepath.Join(dir, ".github", "ISSUE_TEMPLATE"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeIssueTemplate(); err != nil {
+		t.Fatalf("writeIssueTemplate with existing dir: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".github", "ISSUE_TEMPLATE", "hermit-task.md")); err != nil {
+		t.Error("hermit-task.md not created when directory pre-exists")
+	}
+}
+
 // --- fatal ---
 
 func TestFatal(t *testing.T) {
