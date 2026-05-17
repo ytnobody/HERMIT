@@ -24,7 +24,7 @@ func TestCloseIssue_WithoutComment(t *testing.T) {
 		}
 		editCalled = true
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"number": 42, "state": "closed"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"number": 42, "state": "closed"})
 	})
 
 	client, teardown := newTestClient(t, mux)
@@ -57,7 +57,7 @@ func TestCloseIssue_WithComment(t *testing.T) {
 		}
 		commentCalled = true
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"id": 1, "body": body["body"]})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "body": body["body"]})
 	})
 
 	mux.HandleFunc("/repos/owner/repo/issues/7", func(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +66,7 @@ func TestCloseIssue_WithComment(t *testing.T) {
 		}
 		editCalled = true
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"number": 7, "state": "closed"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"number": 7, "state": "closed"})
 	})
 
 	client, teardown := newTestClient(t, mux)
