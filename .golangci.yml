@@ -1,0 +1,28 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - gosimple
+    - ineffassign
+    - gofmt
+    - unused
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: false
+  govet:
+    enable-all: false
+  gofmt:
+    simplify: true
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 10
