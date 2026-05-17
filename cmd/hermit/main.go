@@ -114,18 +114,18 @@ func cmdPause() {
 		fatal(err.Error())
 	}
 	f.Close()
-	fmt.Println("⏸  自動運転を一時停止しました。再開するには: hermit resume")
+	fmt.Println("⏸  Autonomous operation paused. To resume: hermit resume")
 }
 
 func cmdResume() {
 	if err := os.Remove(pauseFile); err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("自動運転はすでに動作中です。")
+			fmt.Println("Autonomous operation is already running.")
 			return
 		}
 		fatal(err.Error())
 	}
-	fmt.Println("▶  自動運転を再開しました。")
+	fmt.Println("▶  Autonomous operation resumed.")
 }
 
 func cmdStatus() {
@@ -175,7 +175,7 @@ func cmdUse(presetName string) {
 		fatal("failed to write harness.toml: " + err.Error())
 	}
 
-	fmt.Printf("✓ preset %q を適用しました\n", presetName)
+	fmt.Printf("✓ preset %q applied\n", presetName)
 	fmt.Printf("  superintendent: %s\n", preset.Superintendent)
 	fmt.Printf("  engineer:       %s\n", preset.Engineer)
 }
@@ -186,7 +186,7 @@ func githubToken() string {
 	}
 	out, err := exec.Command("gh", "auth", "token").Output()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "warn: GITHUB_TOKEN が未設定で gh auth token も失敗しました。GitHub API 呼び出しは認証エラーになります。")
+		fmt.Fprintln(os.Stderr, "warn: GITHUB_TOKEN is not set and gh auth token also failed. GitHub API calls will result in authentication errors.")
 		return ""
 	}
 	return strings.TrimSpace(string(out))
@@ -203,7 +203,7 @@ func resolveBranchPrefix(cfg Config) string {
 	}
 	login, err := gh.GetGitHubLogin()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "warn: GitHub ログイン名を取得できませんでした。フォールバックのブランチプレフィックス \"hermit\" を使用します:", err)
+		fmt.Fprintln(os.Stderr, "warn: could not retrieve GitHub login name. Using fallback branch prefix \"hermit\":", err)
 		return "hermit"
 	}
 	return "hermit/" + login
@@ -246,34 +246,34 @@ func cmdCleanup() {
 
 	branches := git.DetectLegacyBranches()
 	if len(branches) == 0 {
-		fmt.Println("レガシーブランチ: なし")
+		fmt.Println("Legacy branches: none")
 	} else {
-		fmt.Printf("レガシーブランチを削除します: %v\n", branches)
+		fmt.Printf("Removing legacy branches: %v\n", branches)
 		if err := git.CleanupLegacyBranches(branches); err != nil {
-			fmt.Fprintf(os.Stderr, "警告: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		} else {
-			fmt.Printf("  %d 件のレガシーブランチを削除しました。\n", len(branches))
+			fmt.Printf("  Removed %d legacy branch(es).\n", len(branches))
 		}
 	}
 
 	zombies := git.DetectZombieWorktrees()
 	if len(zombies) == 0 {
-		fmt.Println("ゾンビワークツリー: なし")
+		fmt.Println("Zombie worktrees: none")
 	} else {
-		fmt.Printf("ゾンビワークツリーを削除します: %v\n", zombies)
+		fmt.Printf("Removing zombie worktrees: %v\n", zombies)
 		cleaned := 0
 		for _, path := range zombies {
 			out, err := exec.Command("git", "worktree", "remove", "--force", path).CombinedOutput()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  警告: worktree %s の削除に失敗: %s\n", path, strings.TrimSpace(string(out)))
+				fmt.Fprintf(os.Stderr, "  warning: failed to remove worktree %s: %s\n", path, strings.TrimSpace(string(out)))
 			} else {
 				cleaned++
 			}
 		}
-		fmt.Printf("  %d 件のゾンビワークツリーを削除しました。\n", cleaned)
+		fmt.Printf("  Removed %d zombie worktree(s).\n", cleaned)
 	}
 
-	fmt.Println("クリーンアップ完了。")
+	fmt.Println("Cleanup complete.")
 }
 
 func cmdInstall() {
@@ -285,7 +285,7 @@ func cmdInstall() {
 	// cwd is where harness.toml lives, not the binary's directory.
 	cwd, _ := os.Getwd()
 	if _, err := os.Stat("harness.toml"); os.IsNotExist(err) {
-		fatal("harness.toml が見つかりません。プロジェクトルートで `hermit install` を実行してください。")
+		fatal("harness.toml not found. Please run `hermit install` from the project root.")
 	}
 
 	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
@@ -344,7 +344,7 @@ func cmdInstall() {
 	}
 
 	fmt.Println("")
-	fmt.Println("⚠  Claude Code を再起動すると MCP ツールが有効になります。")
+	fmt.Println("⚠  Restart Claude Code to enable the MCP tools.")
 }
 
 func cmdInit() {
@@ -391,7 +391,7 @@ func cmdInit() {
 	writeTemplate("templates/CLAUDE.md.tmpl", "CLAUDE.md", struct {
 		MaxEngineers       int
 		ProjectCodingRules string
-	}{MaxEngineers: maxEng, ProjectCodingRules: "プロジェクト固有のコーディング規約をここに記述してください。"})
+	}{MaxEngineers: maxEng, ProjectCodingRules: "Describe your project-specific coding guidelines here."})
 
 	// Generate .claude/settings.json so Claude Code runs autonomously without
 	// confirmation prompts during the hermit loop.
@@ -399,11 +399,11 @@ func cmdInit() {
 		fatal("failed to write .claude/settings.json: " + err.Error())
 	}
 
-	fmt.Println("\n✓ harness.toml と CLAUDE.md を生成しました。")
-	fmt.Println("✓ .claude/settings.json を生成しました（自律実行モード）。")
-	fmt.Println("次のステップ:")
-	fmt.Println("  1. CLAUDE.md の「コーディング規約」セクションを編集する")
-	fmt.Println("  2. GITHUB_TOKEN を設定して `hermit serve` を起動する")
+	fmt.Println("\n✓ harness.toml and CLAUDE.md generated.")
+	fmt.Println("✓ .claude/settings.json generated (autonomous operation mode).")
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Edit the 'Coding Guidelines' section in CLAUDE.md")
+	fmt.Println("  2. Set GITHUB_TOKEN and start `hermit serve`")
 }
 
 // writeClaudeSettings creates .claude/settings.json in the current directory
@@ -438,7 +438,7 @@ func loadConfig() Config {
 	var cfg Config
 	if _, err := toml.DecodeFile("harness.toml", &cfg); err != nil {
 		if os.IsNotExist(err) {
-			fatal("harness.toml が見つかりません。プロジェクトルートで `hermit init` を実行してください。")
+			fatal("harness.toml not found. Please run `hermit init` from the project root.")
 		}
 		fatal("failed to load harness.toml: " + err.Error())
 	}

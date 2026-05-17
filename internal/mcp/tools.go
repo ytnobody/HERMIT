@@ -17,8 +17,8 @@ import (
 func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
-			mcp.WithDescription("未着手の GitHub Issue 一覧を返す"),
-			mcp.WithString("label", mcp.Description("絞り込むラベル名（省略可）")),
+			mcp.WithDescription("Returns a list of open GitHub Issues that have not been started"),
+			mcp.WithString("label", mcp.Description("Label name to filter by (optional)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
@@ -39,9 +39,9 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 
 	s.AddTool(
 		mcp.NewTool("assign_issue",
-			mcp.WithDescription("Issue を処理中としてマークする（ラベル付与 + アサイン）"),
-			mcp.WithNumber("issue_number", mcp.Description("Issue 番号"), mcp.Required()),
-			mcp.WithString("assignee", mcp.Description("アサインするユーザー名"), mcp.Required()),
+			mcp.WithDescription("Marks an Issue as in-progress (adds label + assigns)"),
+			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
+			mcp.WithString("assignee", mcp.Description("Username to assign"), mcp.Required()),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
@@ -64,9 +64,9 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 
 	s.AddTool(
 		mcp.NewTool("create_worktree",
-			mcp.WithDescription("Issue 用のブランチと git worktree を作成する"),
-			mcp.WithNumber("issue_number", mcp.Description("Issue 番号"), mcp.Required()),
-			mcp.WithString("base_branch", mcp.Description("ベースブランチ名"), mcp.Required()),
+			mcp.WithDescription("Creates a branch and git worktree for an Issue"),
+			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
+			mcp.WithString("base_branch", mcp.Description("Base branch name"), mcp.Required()),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("issue_number")
@@ -88,8 +88,8 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 
 	s.AddTool(
 		mcp.NewTool("evaluate_risk",
-			mcp.WithDescription("PR の変更量・影響範囲からリスクレベルを返す"),
-			mcp.WithNumber("pr_number", mcp.Description("PR 番号"), mcp.Required()),
+			mcp.WithDescription("Returns the risk level based on the PR's change volume and impact area"),
+			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("pr_number")
@@ -108,10 +108,10 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 
 	s.AddTool(
 		mcp.NewTool("merge_pr",
-			mcp.WithDescription("CI 通過確認後に PR をマージし、ワークツリーを削除してレッスンを採点する。HIGH リスクの場合は拒否してコメントを投稿する"),
-			mcp.WithNumber("pr_number", mcp.Description("PR 番号"), mcp.Required()),
-			mcp.WithString("worktree_path", mcp.Description("マージ後に削除するワークツリーのパス（省略可）")),
-			mcp.WithString("branch", mcp.Description("マージ後に削除するブランチ名（省略可）")),
+			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Rejects and posts a comment if HIGH risk."),
+			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
+			mcp.WithString("worktree_path", mcp.Description("Path to the worktree to remove after merge (optional)")),
+			mcp.WithString("branch", mcp.Description("Branch name to remove after merge (optional)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("pr_number")
@@ -124,7 +124,7 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			}
 			level, reasons := risk.Evaluate(status.Files, status.Additions, status.Deletions)
 			if level == risk.High {
-				msg := fmt.Sprintf("⚠️ HERMIT: HIGH リスクのため自動マージをスキップします。\n理由: %v", reasons)
+				msg := fmt.Sprintf("⚠️ HERMIT: Skipping auto-merge due to HIGH risk.\nReasons: %v", reasons)
 				_ = client.PostComment(num, msg)
 				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "HIGH risk"})
 				return mcp.NewToolResultText(string(b)), nil
@@ -164,9 +164,9 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 
 	s.AddTool(
 		mcp.NewTool("add_issue_comment",
-			mcp.WithDescription("Issue または PR にコメントを投稿する（例: 曖昧さの確認や分割提案）"),
-			mcp.WithNumber("issue_number", mcp.Description("Issue 番号"), mcp.Required()),
-			mcp.WithString("body", mcp.Description("コメント本文"), mcp.Required()),
+			mcp.WithDescription("Posts a comment on an Issue or PR (e.g. for clarification requests or split suggestions)"),
+			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
+			mcp.WithString("body", mcp.Description("Comment body"), mcp.Required()),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("issue_number")
@@ -186,7 +186,7 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 
 	s.AddTool(
 		mcp.NewTool("get_lessons",
-			mcp.WithDescription("これまでの失敗から学んだ教訓一覧を返す。Superintendent はパトロール開始時にこれを参照して同じミスを繰り返さないようにする"),
+			mcp.WithDescription("Returns a list of lessons learned from past failures. The Superintendent should consult this at the start of each patrol to avoid repeating the same mistakes."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			ls, err := lessons.ReadLessons(rootDir)

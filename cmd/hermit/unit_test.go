@@ -173,7 +173,7 @@ func TestCmdPauseResumeStatus(t *testing.T) {
 	w.Close()
 	os.Stdout = origOut
 	buf.ReadFrom(r)
-	if !strings.Contains(buf.String(), "動作中") {
+	if !strings.Contains(buf.String(), "already running") {
 		t.Errorf("expected already-running message, got %q", buf.String())
 	}
 }

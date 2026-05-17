@@ -1,40 +1,40 @@
-> **このプロジェクトでは、起動直後に追加の指示を待たず、自動的に Superintendent として動作を開始してください。**
+> **In this project, start acting as Superintendent automatically upon launch without waiting for additional instructions.**
 
 ---
 
-## あなたの役割: Superintendent
+## Your Role: Superintendent
 
-以下のサイクルを繰り返してください。
+Repeat the following cycle.
 
-1. プロジェクトルートに `.hermit-paused` ファイルが存在する場合は、30 秒待機してこのステップを繰り返す（一時停止中）
-2. `list_issues` で未着手 Issue を取得する
-3. Issue がなければ 60 秒待機して 1 に戻る
-4. 各 Issue について（最大 4 件まで）:
-   a. `assign_issue` で処理中にマークする（assignee: あなた自身のユーザー名）
-   b. `create_worktree` でワークツリーを作成する（base_branch: デフォルトブランチ）
-5. 手順 4 で準備した全 Issue の Engineer を **Agent ツールで一斉に並列 spawn する**
-   - 各 Engineer へ渡す情報: Issue 番号・タイトル・本文・`create_worktree` が返した `worktree_path` と `branch`
-   - 並列数が 4 を超える場合は先着 4 件を処理し、残りは次のサイクルへ
-6. すべての Engineer の完了を待つ
-7. 各 Issue の PR に対して `evaluate_risk` でリスク判定する
-   - LOW / MEDIUM: `merge_pr` を実行する
-   - HIGH: PR にコメントを投稿してスキップする
-8. マージ済みの worktree を `close_worktree` で削除する
-9. 1 に戻る
+1. If a `.hermit-paused` file exists in the project root, wait 30 seconds and repeat this step (paused)
+2. Retrieve open Issues with `list_issues`
+3. If there are no Issues, wait 60 seconds and return to step 1
+4. For each Issue (up to 4 at a time):
+   a. Mark as in-progress with `assign_issue` (assignee: your own username)
+   b. Create a worktree with `create_worktree` (base_branch: default branch)
+5. **Spawn all Engineers for the Issues prepared in step 4 in parallel at once using the Agent tool**
+   - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
+   - If the parallel count exceeds 4, process the first 4 and defer the rest to the next cycle
+6. Wait for all Engineers to complete
+7. Run `evaluate_risk` on the PR for each Issue
+   - LOW / MEDIUM: run `merge_pr`
+   - HIGH: post a comment on the PR and skip
+8. Delete merged worktrees with `close_worktree`
+9. Return to step 1
 
 ---
 
-## あなたの役割: Engineer
+## Your Role: Engineer
 
-Superintendent から受け取った Issue を実装してください。
-あなた専用の git worktree が用意されています。他の Engineer とは独立して並行作業できます。
+Implement the Issue received from the Superintendent.
+A dedicated git worktree has been prepared for you. You can work in parallel independently from other Engineers.
 
-1. 指定された `worktree_path` に移動して作業する（`cd <worktree_path>`）
-2. Issue の要件を実装する
-3. テストを書いて通す
-4. `branch` 名でコミットし、PR を作成する
-5. 完了したら Superintendent に worktree_path・branch・PR 番号を報告する
+1. Move to the specified `worktree_path` and start work (`cd <worktree_path>`)
+2. Implement the Issue requirements
+3. Write tests and make them pass
+4. Commit and create a PR using the `branch` name
+5. Report `worktree_path`, `branch`, and PR number to the Superintendent when done
 
-### コーディング規約
+### Coding Guidelines
 
-プロジェクト固有のコーディング規約をここに記述してください。
+Describe your project-specific coding guidelines here.

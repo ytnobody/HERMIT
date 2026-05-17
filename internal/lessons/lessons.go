@@ -15,9 +15,9 @@ const (
 type RiskLabel string
 
 const (
-	RiskHigh   RiskLabel = "[高]"
-	RiskMedium RiskLabel = "[中]"
-	RiskLow    RiskLabel = "[低]"
+	RiskHigh   RiskLabel = "[HIGH]"
+	RiskMedium RiskLabel = "[MEDIUM]"
+	RiskLow    RiskLabel = "[LOW]"
 )
 
 // ScoreInput holds the signals used to score an issue's instruction quality.
@@ -36,25 +36,25 @@ func Score(input ScoreInput) (int, []string) {
 	switch strings.ToUpper(input.PRRiskLevel) {
 	case "HIGH":
 		score -= 30
-		deductions = append(deductions, fmt.Sprintf("%s PRが高リスク判定 (-30)", RiskHigh))
+		deductions = append(deductions, fmt.Sprintf("%s PR rated as high risk (-30)", RiskHigh))
 	case "MEDIUM":
 		score -= 15
-		deductions = append(deductions, fmt.Sprintf("%s PRが中リスク判定 (-15)", RiskMedium))
+		deductions = append(deductions, fmt.Sprintf("%s PR rated as medium risk (-15)", RiskMedium))
 	}
 
 	if input.CIWasFailing {
 		score -= 20
-		deductions = append(deductions, fmt.Sprintf("%s マージ前にCIが失敗していた (-20)", RiskMedium))
+		deductions = append(deductions, fmt.Sprintf("%s CI was failing before merge (-20)", RiskMedium))
 	}
 
 	if input.HasMultiplePRs {
 		score -= 15
-		deductions = append(deductions, fmt.Sprintf("%s PRが複数作成された (-15)", RiskLow))
+		deductions = append(deductions, fmt.Sprintf("%s Multiple PRs were created (-15)", RiskLow))
 	}
 
 	if input.HasClarification {
 		score -= 20
-		deductions = append(deductions, fmt.Sprintf("%s [Clarification Needed]コメントが存在した (-20)", RiskMedium))
+		deductions = append(deductions, fmt.Sprintf("%s A [Clarification Needed] comment was present (-20)", RiskMedium))
 	}
 
 	if score < 0 {
@@ -63,7 +63,7 @@ func Score(input ScoreInput) (int, []string) {
 	return score, deductions
 }
 
-// GenerateLesson returns a single-line Japanese lesson for scores below 70.
+// GenerateLesson returns a single-line English lesson for scores below 70.
 // Returns empty string if score >= 70 (no lesson needed).
 func GenerateLesson(score int, deductions []string) string {
 	if score >= 70 {
@@ -73,24 +73,24 @@ func GenerateLesson(score int, deductions []string) string {
 	var parts []string
 	for _, d := range deductions {
 		if strings.HasPrefix(d, string(RiskHigh)) {
-			parts = append(parts, "Issue指示をより詳細に記述し、変更スコープを限定する")
+			parts = append(parts, "Describe Issue instructions in more detail and limit the scope of changes")
 		} else if strings.Contains(d, "CI") {
-			parts = append(parts, "実装前にテストシナリオを明示する")
-		} else if strings.Contains(d, "複数") {
-			parts = append(parts, "Issue1件につきPR1件となるよう指示を具体化する")
+			parts = append(parts, "Specify test scenarios explicitly before implementation")
+		} else if strings.Contains(d, "Multiple PRs") {
+			parts = append(parts, "Make instructions specific enough so that each Issue results in exactly one PR")
 		} else if strings.Contains(d, "Clarification") {
-			parts = append(parts, "曖昧な要件を事前に解決してからIssueを発行する")
+			parts = append(parts, "Resolve ambiguous requirements before creating the Issue")
 		} else if strings.HasPrefix(d, string(RiskMedium)) {
-			parts = append(parts, "変更範囲が広がらないよう実装境界を指定する")
+			parts = append(parts, "Specify implementation boundaries to prevent scope creep")
 		}
 	}
 
 	if len(parts) == 0 {
-		parts = append(parts, "指示品質を見直し、要件をより明確に記述する")
+		parts = append(parts, "Review instruction quality and describe requirements more clearly")
 	}
 
-	label := label(deductions)
-	return fmt.Sprintf("%s %s（採点: %d点）", label, strings.Join(uniqueStrings(parts), "、"), score)
+	lbl := label(deductions)
+	return fmt.Sprintf("%s %s (score: %d)", lbl, strings.Join(uniqueStrings(parts), ", "), score)
 }
 
 func label(deductions []string) RiskLabel {

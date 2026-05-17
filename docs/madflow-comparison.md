@@ -1,142 +1,142 @@
-# HERMIT vs MADFLOW 機能比較レポート
+# HERMIT vs MADFLOW Feature Comparison Report
 
-**作成日**: 2026-05-17  
-**Issue**: [#1 ytnobody/MADFLOWを確認し、不足している機能のリストアップ](https://github.com/ytnobody/HERMIT/issues/1)
+**Created**: 2026-05-17
+**Issue**: [#1 ytnobody/Review MADFLOW and list missing features](https://github.com/ytnobody/HERMIT/issues/1)
 
 ---
 
-## 概要
+## Overview
 
-[MADFLOW](https://github.com/ytnobody/MADFLOW)（Multi-Agent Development Flow）と [HERMIT](https://github.com/ytnobody/HERMIT)（Harness for Engineer Role Management via Interactive Tasks）は、いずれも AI エージェントによる自律的なソフトウェア開発を実現するフレームワークです。ただし実装アーキテクチャが大きく異なります。
+[MADFLOW](https://github.com/ytnobody/MADFLOW) (Multi-Agent Development Flow) and [HERMIT](https://github.com/ytnobody/HERMIT) (Harness for Engineer Role Management via Interactive Tasks) are both frameworks for autonomous software development with AI agents. However, their implementation architectures differ significantly.
 
-| 観点 | MADFLOW | HERMIT |
+| Aspect | MADFLOW | HERMIT |
 |------|---------|--------|
-| アーキテクチャ | Go バイナリが Claude Code を subprocess として起動・制御 | Claude Code が MCP サーバー経由で HERMIT ツールを呼び出す |
-| コード規模 | ~5,000 行（Go） | ~700 行（Go） |
-| 役割の重心 | バイナリがオーケストレーションロジックを実装 | Claude Code 自身がオーケストレーションを担当 |
-| 設定ファイル | `madflow.toml` | `harness.toml` |
+| Architecture | Go binary launches and controls Claude Code as a subprocess | Claude Code calls HERMIT tools via MCP server |
+| Code volume | ~5,000 lines (Go) | ~700 lines (Go) |
+| Responsibility center | Binary implements orchestration logic | Claude Code itself handles orchestration |
+| Configuration file | `madflow.toml` | `harness.toml` |
 
 ---
 
-## HERMIT が現在提供している機能
+## Features Currently Provided by HERMIT
 
-| MCP ツール | 説明 |
+| MCP Tool | Description |
 |------------|------|
-| `list_issues` | 未着手の Issue 一覧を返す |
-| `assign_issue` | Issue をラベル付与・アサインして処理中にマーク |
-| `create_worktree` | `hermit/issue-{N}` ブランチと `/tmp/hermit-{N}` ワークツリーを作成 |
-| `evaluate_risk` | PR の変更量・影響範囲から LOW/MEDIUM/HIGH を判定 |
-| `merge_pr` | CI 通過確認後にマージ（HIGH リスクは拒否してコメント投稿） |
-| `close_worktree` | ワークツリーとブランチを削除 |
+| `list_issues` | Returns a list of open Issues |
+| `assign_issue` | Marks an Issue as in-progress by adding a label and assigning |
+| `create_worktree` | Creates a `hermit/issue-{N}` branch and `/tmp/hermit-{N}` worktree |
+| `evaluate_risk` | Returns LOW/MEDIUM/HIGH based on PR change volume and impact area |
+| `merge_pr` | Merges after CI passes (rejects HIGH risk with a comment) |
+| `close_worktree` | Removes the worktree and branch |
 
-サブコマンド: `serve`, `install`, `init`, `pause`, `resume`, `status`
+Subcommands: `serve`, `install`, `init`, `pause`, `resume`, `status`
 
 ---
 
-## MADFLOW にあって HERMIT にない機能
+## Features in MADFLOW Not in HERMIT
 
-### 1. レッスン注入機能（自己学習ループ）
+### 1. Lesson Injection (Self-Learning Loop)
 
 **Issue**: [#4](https://github.com/ytnobody/HERMIT/issues/4)
 
-PR マージ後に Issue 指示品質を自動採点し、失敗から教訓を生成してスーパーインテンデントのプロンプトに注入するフィードバックループ。
+A feedback loop that automatically scores Issue instruction quality after a PR merge, generates lessons from failures, and injects them into the Superintendent's prompt.
 
-- 採点基準: 派生 Issue 発生（-30）、Clarification Needed コメント（-20）、直接実装（-20）、PR 複数本（-15）
-- 70 点未満の場合に Anthropic API で教訓を生成
-- 最大 15 件を管理（LLM でマージ・リスク順トリミング）
+- Scoring criteria: derived Issue created (-30), Clarification Needed comment (-20), direct implementation (-20), multiple PRs (-15)
+- Generates a lesson using the Anthropic API for scores below 70
+- Manages up to 15 lessons (merged and trimmed by risk using LLM)
 
-### 2. GitHub API レートリミット事前チェック
+### 2. GitHub API Rate Limit Pre-Check
 
 **Issue**: [#5](https://github.com/ytnobody/HERMIT/issues/5)
 
-API 呼び出し前に残量を確認し、残量不足時は待機またはスキップする保護機構。
+A protection mechanism that checks the remaining quota before API calls and waits or skips when quota is low.
 
-- 閾値: デフォルト 10 件未満
-- 最大待機時間: 10 分（超過する場合はサイクルをスキップ）
-- フェイルオープン設計
+- Threshold: fewer than 10 remaining by default
+- Maximum wait time: 10 minutes (skips the cycle if exceeded)
+- Fail-open design
 
-### 3. ユーザー名前空間付きブランチ・ワークツリー
+### 3. User-Namespaced Branches and Worktrees
 
 **Issue**: [#6](https://github.com/ytnobody/HERMIT/issues/6)
 
-ブランチ名に GitHub ログイン名を含めることで、複数ユーザーの並行稼働時の名前衝突を防止。
+Prevents naming conflicts when multiple users run concurrently by including the GitHub login name in branch names.
 
-- 形式: `madflow/{gh_login}/issue-{ID}` → HERMIT では `hermit/{gh_login}/issue-{N}`
-- 自動 GitHub ログイン検出（`gh api user`）
-- 後方互換性維持
+- Format: `madflow/{gh_login}/issue-{ID}` → HERMIT: `hermit/{gh_login}/issue-{N}`
+- Automatic GitHub login detection (`gh api user`)
+- Backward compatibility maintained
 
-### 4. hermit upgrade コマンド（自己アップグレード）
+### 4. hermit upgrade Command (Self-Upgrade)
 
 **Issue**: [#7](https://github.com/ytnobody/HERMIT/issues/7)
 
-GitHub Releases から最新バイナリをダウンロードして自己更新するコマンド。
+A command that downloads the latest binary from GitHub Releases and self-updates.
 
-- SHA-256 チェックサム検証
-- アトミックなバイナリ置き換え
-- `hermit version` コマンドも追加
+- SHA-256 checksum verification
+- Atomic binary replacement
+- Also adds the `hermit version` command
 
-### 5. レガシーリソースの自動クリーンアップ
+### 5. Automatic Cleanup of Legacy Resources
 
 **Issue**: [#8](https://github.com/ytnobody/HERMIT/issues/8)
 
-旧形式のブランチ名・ワークツリーパスを起動時に検出して自動削除または警告するメカニズム。
+A mechanism that detects old-format branch names and worktree paths on startup and automatically deletes or warns about them.
 
-- レガシーブランチ: `git branch -d` で安全削除
-- レガシーワークツリー: 警告ログ出力
-- `hermit cleanup` サブコマンドも追加
+- Legacy branches: safely deleted with `git branch -d`
+- Legacy worktrees: warning log output
+- Also adds the `hermit cleanup` subcommand
 
-### 6. 複数 AI バックエンドのサポート
+### 6. Multiple AI Backend Support
 
 **Issue**: [#9](https://github.com/ytnobody/HERMIT/issues/9)
 
-Claude Code CLI・Gemini CLI・Anthropic API キーの複数バックエンドをサポートし、プリセットで切り替え可能にする機能。
+A feature to support multiple backends (Claude Code CLI, Gemini CLI, Anthropic API key) switchable with presets.
 
-- HERMIT のアーキテクチャ上、Engineer は Claude Code が担当するため主に Anthropic API キー方式が現実的
-- `hermit use <preset>` コマンドで設定を切り替え
+- Due to HERMIT's architecture where Claude Code handles Engineers, the Anthropic API key approach is most practical
+- `hermit use <preset>` command switches configurations
 
-### 7. Issue 粒度判断と曖昧な Issue の処理フロー
+### 7. Issue Granularity Evaluation and Handling of Ambiguous Issues
 
 **Issue**: [#10](https://github.com/ytnobody/HERMIT/issues/10)
 
-Engineer が Issue 受け取り後に粒度チェックと曖昧さ評価を行い、必要に応じて Superintendent に確認するフロー。
+A flow where the Engineer performs a granularity check and ambiguity assessment after receiving an Issue, and requests confirmation from the Superintendent if needed.
 
-- 粒度が大きすぎる場合はサブ Issue 分割を提案
-- 曖昧な場合は `[Clarification Needed]` コメントで確認要求
-- `add_issue_comment` / `split_issue` MCP ツールの追加
+- If too large, suggests splitting into sub-Issues
+- If ambiguous, requests clarification with a `[Clarification Needed]` comment
+- Adds `add_issue_comment` / `split_issue` MCP tools
 
-### 8. CI 品質強化（lint・セキュリティ・カバレッジ）
+### 8. CI Quality Enhancement (lint, security, coverage)
 
 **Issue**: [#11](https://github.com/ytnobody/HERMIT/issues/11)
 
-AI が生成したコードを自動品質ゲートで保証するための CI 強化。
+CI enhancements to guarantee quality of AI-generated code with automatic quality gates.
 
-- `golangci-lint`（errcheck, staticcheck, unused 等）
-- `govulncheck`（脆弱性スキャン）
-- テストカバレッジ閾値チェック
-- レースコンディション検出（`-race`）
+- `golangci-lint` (errcheck, staticcheck, unused, etc.)
+- `govulncheck` (vulnerability scanning)
+- Test coverage threshold check
+- Race condition detection (`-race`)
 
 ---
 
-## 優先度評価
+## Priority Evaluation
 
-| Issue | 機能 | 推奨優先度 | 理由 |
+| Issue | Feature | Recommended Priority | Reason |
 |-------|------|-----------|------|
-| #5 | レートリミットチェック | 高 | 長時間運転での即時的なリスク軽減 |
-| #11 | CI 品質強化 | 高 | AI 生成コードの品質保証に直結 |
-| #4 | レッスン注入 | 中 | 自己改善ループで長期的品質向上 |
-| #6 | ユーザー名前空間 | 中 | チーム環境での必須機能 |
-| #7 | hermit upgrade | 中 | UX 向上、実装コストが低い |
-| #10 | Issue 粒度判断 | 中 | CLAUDE.md 拡張でほぼ実現可能 |
-| #8 | レガシークリーンアップ | 低 | #6 実装後に必要になる |
-| #9 | 複数バックエンド | 低 | アーキテクチャ制約から効果が限定的 |
+| #5 | Rate limit check | High | Immediate risk mitigation for long-running operations |
+| #11 | CI quality enhancement | High | Directly related to quality assurance for AI-generated code |
+| #4 | Lesson injection | Medium | Long-term quality improvement through self-improvement loop |
+| #6 | User namespacing | Medium | Essential feature for team environments |
+| #7 | hermit upgrade | Medium | UX improvement with low implementation cost |
+| #10 | Issue granularity evaluation | Medium | Mostly achievable via CLAUDE.md extension |
+| #8 | Legacy cleanup | Low | Needed after #6 implementation |
+| #9 | Multiple backends | Low | Limited effect due to architectural constraints |
 
 ---
 
-## HERMIT の強みと差別化ポイント
+## HERMIT's Strengths and Differentiators
 
-- **コード量の少なさ**: MADFLOW の約 14% のコード量で同等のコアワークフローを実現
-- **Claude Code ネイティブ**: MCP 統合により Claude Code の能力（思考・計画・コンテキスト管理）を最大活用
-- **シンプルな導入**: `hermit init` と `hermit serve` だけで使い始められる
-- **Claude Code スキル**: `/hermit`, `/loop` などのスキルで自然言語ベースの操作が可能
+- **Small code volume**: Achieves equivalent core workflow with approximately 14% of MADFLOW's code
+- **Claude Code native**: Maximizes Claude Code's capabilities (reasoning, planning, context management) through MCP integration
+- **Simple setup**: Ready to use with just `hermit init` and `hermit serve`
+- **Claude Code skills**: Natural language-based operation with skills like `/hermit`, `/loop`
 
-MADFLOW の多くの高度な機能は、HERMIT ではプロンプトエンジニアリング（CLAUDE.md）と Claude Code 自身の能力で代替可能な部分もあります。実装優先度は実際のユースケースに基づいて決定することを推奨します。
+Many of MADFLOW's advanced features can be partially substituted in HERMIT through prompt engineering (CLAUDE.md) and Claude Code's own capabilities. We recommend determining implementation priorities based on actual use cases.

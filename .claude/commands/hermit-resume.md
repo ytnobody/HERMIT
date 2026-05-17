@@ -1,1 +1,1 @@
-Bash で `hermit resume` を実行してください。
+Run `hermit resume` in Bash.

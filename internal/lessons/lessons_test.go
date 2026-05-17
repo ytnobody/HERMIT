@@ -103,38 +103,38 @@ func TestGenerateLesson(t *testing.T) {
 		{
 			name:        "HIGH risk lesson contains risk label",
 			score:       69,
-			deductions:  []string{"[高] PRが高リスク判定 (-30)"},
-			wantContain: "[高]",
+			deductions:  []string{"[HIGH] PR rated as high risk (-30)"},
+			wantContain: "[HIGH]",
 		},
 		{
 			name:        "CI failure lesson",
 			score:       60,
-			deductions:  []string{"[中] マージ前にCIが失敗していた (-20)"},
-			wantContain: "テスト",
+			deductions:  []string{"[MEDIUM] CI was failing before merge (-20)"},
+			wantContain: "test scenarios",
 		},
 		{
 			name:        "multiple PRs lesson",
 			score:       65,
-			deductions:  []string{"[低] PRが複数作成された (-15)"},
-			wantContain: "PR1件",
+			deductions:  []string{"[LOW] Multiple PRs were created (-15)"},
+			wantContain: "one PR",
 		},
 		{
 			name:        "clarification lesson",
 			score:       60,
-			deductions:  []string{"[中] [Clarification Needed]コメントが存在した (-20)"},
-			wantContain: "曖昧",
+			deductions:  []string{"[MEDIUM] A [Clarification Needed] comment was present (-20)"},
+			wantContain: "ambiguous",
 		},
 		{
 			name:        "empty deductions with low score gets generic lesson",
 			score:       50,
 			deductions:  []string{},
-			wantContain: "指示品質",
+			wantContain: "instruction quality",
 		},
 		{
 			name:        "lesson includes score",
 			score:       55,
-			deductions:  []string{"[高] PRが高リスク判定 (-30)"},
-			wantContain: "55点",
+			deductions:  []string{"[HIGH] PR rated as high risk (-30)"},
+			wantContain: "score: 55",
 		},
 	}
 
@@ -167,7 +167,7 @@ func TestAppendAndReadLessons(t *testing.T) {
 	}
 
 	// Append single lesson
-	if err := AppendLesson(dir, "[高] テスト教訓（採点: 60点）"); err != nil {
+	if err := AppendLesson(dir, "[HIGH] Test lesson (score: 60)"); err != nil {
 		t.Fatalf("AppendLesson: %v", err)
 	}
 	lessons, err = ReadLessons(dir)
@@ -193,9 +193,9 @@ func TestAppendLessonTrimsToMaxLessons(t *testing.T) {
 
 	// Write 15 lessons
 	for i := 0; i < maxLessons; i++ {
-		lesson := "[低] 教訓テスト"
+		lesson := "[LOW] lesson test"
 		if i == 0 {
-			lesson = "[高] 高リスク教訓"
+			lesson = "[HIGH] high-risk lesson"
 		}
 		if err := AppendLesson(dir, lesson); err != nil {
 			t.Fatalf("AppendLesson %d: %v", i, err)
@@ -208,7 +208,7 @@ func TestAppendLessonTrimsToMaxLessons(t *testing.T) {
 	}
 
 	// Add one more — should trim to maxLessons
-	if err := AppendLesson(dir, "[中] 超過テスト"); err != nil {
+	if err := AppendLesson(dir, "[MEDIUM] overflow test"); err != nil {
 		t.Fatalf("AppendLesson overflow: %v", err)
 	}
 	lessons, _ = ReadLessons(dir)
@@ -219,7 +219,7 @@ func TestAppendLessonTrimsToMaxLessons(t *testing.T) {
 	// High-risk lesson should be retained
 	found := false
 	for _, l := range lessons {
-		if strings.HasPrefix(l, "[高]") {
+		if strings.HasPrefix(l, "[HIGH]") {
 			found = true
 			break
 		}
@@ -245,9 +245,9 @@ func TestTrimLessons(t *testing.T) {
 			name: "high risk preserved over low",
 			input: func() []string {
 				ls := make([]string, maxLessons+2)
-				ls[0] = "[高] 重要な教訓"
+				ls[0] = "[HIGH] important lesson"
 				for i := 1; i < len(ls); i++ {
-					ls[i] = "[低] 低優先教訓"
+					ls[i] = "[LOW] low-priority lesson"
 				}
 				return ls
 			}(),
@@ -265,7 +265,7 @@ func TestTrimLessons(t *testing.T) {
 			if tt.wantHigh {
 				found := false
 				for _, l := range got {
-					if strings.HasPrefix(l, "[高]") {
+					if strings.HasPrefix(l, "[HIGH]") {
 						found = true
 						break
 					}
