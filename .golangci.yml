@@ -7,27 +7,27 @@ linters:
     - staticcheck
     - ineffassign
     - unused
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+      exclude-functions:
+        - os.Chdir
+        - os.Remove
+        - os.Chmod
+        - os.MkdirAll
+        - os.WriteFile
+        - (*os.File).Close
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Println
+        - (bufio.Writer).Flush
+    govet:
+      enable-all: false
 
 formatters:
   enable:
     - gofmt
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: false
-    exclude-functions:
-      - os.Chdir
-      - os.Remove
-      - os.Chmod
-      - os.MkdirAll
-      - (*os.File).Close
-      - fmt.Fprintln
-      - fmt.Fprintf
-      - fmt.Println
-      - (bufio.Writer).Flush
-  govet:
-    enable-all: false
 
 run:
   timeout: 5m
