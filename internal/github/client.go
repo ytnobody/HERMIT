@@ -4,11 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 
 	gogithub "github.com/google/go-github/v62/github"
 	"golang.org/x/oauth2"
 )
+
+// issueRefRe matches common issue reference patterns in PR bodies/titles
+// e.g. "closes #31", "fixes #31", "#31"
+var issueRefRe = regexp.MustCompile(`(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)?\s*#(\d+)`)
 
 // GetGitHubLogin returns the authenticated GitHub username by calling
 // "gh api user --jq '.login'". If the gh CLI is unavailable or fails,
@@ -30,6 +36,14 @@ type Issue struct {
 	Title  string
 	Body   string
 	Labels []string
+}
+
+// PRInfo holds a summary of an open pull request returned by ListOpenPRs.
+type PRInfo struct {
+	PRNumber    int    `json:"pr_number"`
+	Title       string `json:"title"`
+	HeadBranch  string `json:"head_branch"`
+	IssueNumber int    `json:"issue_number,omitempty"` // 0 means not detected
 }
 
 type PRFile struct {
@@ -87,6 +101,45 @@ func (c *Client) ListOpenIssues(label string) ([]Issue, error) {
 			Title:  i.GetTitle(),
 			Body:   i.GetBody(),
 			Labels: labels,
+		})
+	}
+	return result, nil
+}
+
+// extractIssueNumber parses the first issue reference from the given text
+// (e.g. "Closes #31" → 31). Returns 0 if none found.
+func extractIssueNumber(text string) int {
+	m := issueRefRe.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+// ListOpenPRs returns open pull requests. When issueNum > 0 only PRs
+// referencing that issue (detected via body/title) are returned.
+func (c *Client) ListOpenPRs(issueNum int) ([]PRInfo, error) {
+	prs, _, err := c.gh.PullRequests.List(context.Background(), c.owner, c.repo, &gogithub.PullRequestListOptions{
+		State: "open",
+	})
+	if err != nil {
+		return nil, err
+	}
+	var result []PRInfo
+	for _, pr := range prs {
+		detected := extractIssueNumber(pr.GetBody())
+		if detected == 0 {
+			detected = extractIssueNumber(pr.GetTitle())
+		}
+		if issueNum > 0 && detected != issueNum {
+			continue
+		}
+		result = append(result, PRInfo{
+			PRNumber:    pr.GetNumber(),
+			Title:       pr.GetTitle(),
+			HeadBranch:  pr.GetHead().GetRef(),
+			IssueNumber: detected,
 		})
 	}
 	return result, nil
