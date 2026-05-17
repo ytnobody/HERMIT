@@ -389,18 +389,18 @@ func (c *Client) ReviewPR(num int) (string, error) {
 
 	// File change summary
 	sb.WriteString("### File Change Summary\n\n")
-	sb.WriteString(fmt.Sprintf("- **Files changed**: %d\n", len(files)))
-	sb.WriteString(fmt.Sprintf("- **Lines added**: +%d\n", additions))
-	sb.WriteString(fmt.Sprintf("- **Lines removed**: -%d\n", deletions))
+	fmt.Fprintf(&sb, "- **Files changed**: %d\n", len(files))
+	fmt.Fprintf(&sb, "- **Lines added**: +%d\n", additions)
+	fmt.Fprintf(&sb, "- **Lines removed**: -%d\n", deletions)
 	sb.WriteString("\n")
 
 	// Risk assessment
 	sb.WriteString("### Risk Assessment\n\n")
-	sb.WriteString(fmt.Sprintf("**Level**: %s\n", level))
+	fmt.Fprintf(&sb, "**Level**: %s\n", level)
 	if len(reasons) > 0 {
 		sb.WriteString("\nReasons:\n")
 		for _, r := range reasons {
-			sb.WriteString(fmt.Sprintf("- %s\n", r))
+			fmt.Fprintf(&sb, "- %s\n", r)
 		}
 	}
 	sb.WriteString("\n")
@@ -421,9 +421,9 @@ func (c *Client) ReviewPR(num int) (string, error) {
 	if breakingChanges {
 		breakMark = "[x]"
 	}
-	sb.WriteString(fmt.Sprintf("- %s Tests present (`_test.go` files changed)\n", testMark))
-	sb.WriteString(fmt.Sprintf("- %s Docs updated (`docs/` or `.md` files changed)\n", docMark))
-	sb.WriteString(fmt.Sprintf("- %s Possible breaking changes (large deletions or HIGH risk path)\n", breakMark))
+	fmt.Fprintf(&sb, "- %s Tests present (`_test.go` files changed)\n", testMark)
+	fmt.Fprintf(&sb, "- %s Docs updated (`docs/` or `.md` files changed)\n", docMark)
+	fmt.Fprintf(&sb, "- %s Possible breaking changes (large deletions or HIGH risk path)\n", breakMark)
 
 	return sb.String(), nil
 }
