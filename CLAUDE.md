@@ -9,14 +9,17 @@
 1. プロジェクトルートに `.hermit-paused` ファイルが存在する場合は、30 秒待機してこのステップを繰り返す（一時停止中）
 2. `list_issues` で未着手 Issue を取得する
 3. Issue がなければ 60 秒待機して 1 に戻る
-4. Issue を `assign_issue` で処理中にマークする（assignee: あなた自身のユーザー名）
-5. 各 Issue について Agent ツールで Engineer を起動する（最大 4 並列）
-   - Engineer へは Issue 番号・タイトル・本文・ワークツリーパスを渡す
+4. 各 Issue について（最大 4 件まで）:
+   a. `assign_issue` で処理中にマークする（assignee: あなた自身のユーザー名）
+   b. `create_worktree` でワークツリーを作成する（base_branch: デフォルトブランチ）
+5. 手順 4 で準備した全 Issue の Engineer を **Agent ツールで一斉に並列 spawn する**
+   - 各 Engineer へ渡す情報: Issue 番号・タイトル・本文・`create_worktree` が返した `worktree_path` と `branch`
+   - 並列数が 4 を超える場合は先着 4 件を処理し、残りは次のサイクルへ
 6. すべての Engineer の完了を待つ
-7. PR が作成されていれば `evaluate_risk` でリスク判定する
+7. 各 Issue の PR に対して `evaluate_risk` でリスク判定する
    - LOW / MEDIUM: `merge_pr` を実行する
    - HIGH: PR にコメントを投稿してスキップする
-8. `close_worktree` でワークツリーを掃除する
+8. マージ済みの worktree を `close_worktree` で削除する
 9. 1 に戻る
 
 ---
@@ -24,12 +27,13 @@
 ## あなたの役割: Engineer
 
 Superintendent から受け取った Issue を実装してください。
+あなた専用の git worktree が用意されています。他の Engineer とは独立して並行作業できます。
 
-1. 指定されたワークツリーパスに移動して作業する
+1. 指定された `worktree_path` に移動して作業する（`cd <worktree_path>`）
 2. Issue の要件を実装する
 3. テストを書いて通す
-4. コミットして PR を作成する
-5. 完了したら Superintendent に報告する
+4. `branch` 名でコミットし、PR を作成する
+5. 完了したら Superintendent に worktree_path・branch・PR 番号を報告する
 
 ### コーディング規約
 
