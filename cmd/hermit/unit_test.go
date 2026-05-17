@@ -254,13 +254,16 @@ func TestWriteTemplate_Valid(t *testing.T) {
 	defer os.Chdir(prev)
 
 	type data struct {
-		Owner        string
-		Repo         string
-		Language     string
-		MaxEngineers int
+		Owner               string
+		Repo                string
+		Language            string
+		MaxEngineers        int
+		SuperintendentModel string
+		EngineerModel       string
 	}
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data{
 		Owner: "owner", Repo: "repo", Language: "ja", MaxEngineers: 4,
+		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5",
 	})
 	content, err := os.ReadFile(filepath.Join(dir, "harness.toml"))
 	if err != nil {
