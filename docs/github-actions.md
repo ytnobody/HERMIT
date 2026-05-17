@@ -1,43 +1,43 @@
-# GitHub Actions での HERMIT 自動運転
+# Running HERMIT Autonomously with GitHub Actions
 
-HERMIT は GitHub Actions ワークフローから ANTHROPIC_API_KEY を使って Claude Code CLI を動かすことができます。
+HERMIT can drive Claude Code CLI using `ANTHROPIC_API_KEY` from a GitHub Actions workflow.
 
-## 前提条件
+## Prerequisites
 
-- リポジトリの Secrets に `ANTHROPIC_API_KEY` を登録済みであること
-- リポジトリの Secrets に `GITHUB_TOKEN`（または PAT）を登録済みであること
-- `harness.toml` と `CLAUDE.md` がリポジトリに含まれていること
+- `ANTHROPIC_API_KEY` registered in repository Secrets
+- `GITHUB_TOKEN` (or a PAT) registered in repository Secrets
+- `harness.toml` and `CLAUDE.md` included in the repository
 
-## モデルプリセット
+## Model Presets
 
-`hermit use <preset>` コマンドで `harness.toml` の `[model]` セクションを切り替えられます。
+Use `hermit use <preset>` to switch the `[model]` section in `harness.toml`.
 
-| プリセット名  | superintendent         | engineer               | 用途                     |
-|--------------|------------------------|------------------------|--------------------------|
-| `claude`      | claude-sonnet-4-5      | claude-sonnet-4-5      | バランス重視（デフォルト） |
-| `claude-cheap`| claude-sonnet-4-5      | claude-haiku-4-5       | コスト最適化             |
+| Preset Name   | superintendent         | engineer               | Use Case                  |
+|--------------|------------------------|------------------------|---------------------------|
+| `claude`      | claude-sonnet-4-5      | claude-sonnet-4-5      | Balanced (default)        |
+| `claude-cheap`| claude-sonnet-4-5      | claude-haiku-4-5       | Cost-optimized            |
 
 ```bash
-# ローカルでプリセットを適用してからコミットする
+# Apply a preset locally and commit
 hermit use claude-cheap
 git add harness.toml && git commit -m "chore: switch to claude-cheap preset"
 ```
 
-## ワークフロー例
+## Workflow Example
 
 ```yaml
 name: HERMIT Autonomous Loop
 
 on:
   schedule:
-    # 毎時 0 分に起動（GitHub Actions の cron は UTC）
+    # Run at minute 0 of every hour (GitHub Actions cron is UTC)
     - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
   hermit:
     runs-on: ubuntu-latest
-    timeout-minutes: 55   # 1 サイクル分の余裕を持たせる
+    timeout-minutes: 55   # Allow enough time for one cycle
 
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -65,25 +65,25 @@ jobs:
             -p "$(cat CLAUDE.md)"
 ```
 
-### ポイント
+### Key Points
 
-- `ANTHROPIC_API_KEY` を設定すると Claude Code CLI は API キー認証を使います（`gh auth login` 不要）。
-- `hermit install` は `~/.claude/settings.json` に MCP サーバーを登録します。Actions ランナーは都度クリーンなため毎回実行が必要です。
-- `--dangerously-skip-permissions` を指定することで Claude Code が確認プロンプトなしに自律動作します。
-- `timeout-minutes` は GitHub Actions の最大実行時間（6 時間）以内に収まるよう設定してください。
+- Setting `ANTHROPIC_API_KEY` causes Claude Code CLI to use API key authentication (no `gh auth login` needed).
+- `hermit install` registers the MCP server in `~/.claude/settings.json`. Since Actions runners are clean each run, this must be executed every time.
+- `--dangerously-skip-permissions` allows Claude Code to operate autonomously without confirmation prompts.
+- Set `timeout-minutes` to stay within the GitHub Actions maximum execution time (6 hours).
 
-## ANTHROPIC_API_KEY を使う場合のモデル指定
+## Specifying a Model When Using ANTHROPIC_API_KEY
 
-Claude Code CLI は `ANTHROPIC_API_KEY` が設定されている場合、`--model` フラグで利用するモデルを指定できます。
-`harness.toml` の `[model]` セクションに記述したモデル名をそのまま渡すことができます。
+When `ANTHROPIC_API_KEY` is set, Claude Code CLI can specify the model to use with the `--model` flag.
+You can pass the model name written in the `[model]` section of `harness.toml` directly.
 
 ```bash
-# harness.toml から値を取得する例
+# Example: extract values from harness.toml
 SUPER_MODEL=$(grep superintendent harness.toml | awk -F'"' '{print $2}')
 ENG_MODEL=$(grep engineer harness.toml | awk -F'"' '{print $2}')
 ```
 
-## セキュリティ上の注意
+## Security Notes
 
-- `ANTHROPIC_API_KEY` は必ずリポジトリの **Secrets** に保存してください（`.env` ファイルをコミットしないこと）。
-- フォークからのプルリクエストには Secrets が渡されません。`pull_request_target` トリガーを使う場合は十分に注意してください。
+- Always store `ANTHROPIC_API_KEY` in repository **Secrets** (never commit `.env` files).
+- Secrets are not passed to pull requests from forks. Exercise caution if using the `pull_request_target` trigger.

@@ -52,7 +52,7 @@ func TestMainSwitch_Resume(t *testing.T) {
 
 	directMain(t, []string{"hermit", "pause"})
 	out := directMain(t, []string{"hermit", "resume"})
-	if !strings.Contains(out, "再開") {
+	if !strings.Contains(out, "resumed") {
 		t.Errorf("expected resume message, got %q", out)
 	}
 }

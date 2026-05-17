@@ -21,15 +21,15 @@ func Evaluate(files []gh.PRFile, additions, deletions int) (Level, []string) {
 	var reasons []string
 
 	if len(files) >= 20 {
-		reasons = append(reasons, "変更ファイル数が20以上")
+		reasons = append(reasons, "20 or more files changed")
 	}
 	if total >= 500 {
-		reasons = append(reasons, "変更行数が500以上")
+		reasons = append(reasons, "500 or more lines changed")
 	}
 	for _, f := range files {
 		for _, p := range highPaths {
 			if strings.HasPrefix(f.Filename, p) || f.Filename == p {
-				reasons = append(reasons, f.Filename+" が高リスクパスに含まれる")
+				reasons = append(reasons, f.Filename+" is in a high-risk path")
 			}
 		}
 	}
@@ -38,14 +38,14 @@ func Evaluate(files []gh.PRFile, additions, deletions int) (Level, []string) {
 	}
 
 	if len(files) >= 10 {
-		reasons = append(reasons, "変更ファイル数が10以上")
+		reasons = append(reasons, "10 or more files changed")
 	}
 	if total >= 200 {
-		reasons = append(reasons, "変更行数が200以上")
+		reasons = append(reasons, "200 or more lines changed")
 	}
 	for _, f := range files {
 		if strings.HasPrefix(f.Filename, "internal/") {
-			reasons = append(reasons, f.Filename+" がinternalコアに変更あり")
+			reasons = append(reasons, f.Filename+" has changes in internal core")
 			break
 		}
 	}

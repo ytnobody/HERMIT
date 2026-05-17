@@ -1,1 +1,1 @@
-Bash で `hermit pause` を実行してください。
+Run `hermit pause` in Bash.

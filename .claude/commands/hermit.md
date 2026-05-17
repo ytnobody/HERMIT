@@ -1,17 +1,17 @@
-Superintendentとして、以下のサイクルを `/loop 270s` を使って繰り返し実行してください。
+As Superintendent, repeat the following cycle using `/loop 270s`.
 
-各サイクルの内容：
+Each cycle:
 
-1. プロジェクトルートに `.hermit-paused` ファイルが存在する場合はここで終了してください（一時停止中）
-2. `list_issues` で未着手 Issue を取得する
-3. Issue がなければ終了してください（次のループで再確認します）
-4. 各 Issue について（最大 4 件まで）:
-   a. `assign_issue` で処理中にマークする
-   b. `create_worktree` でワークツリーを作成する（base_branch: デフォルトブランチ）
-5. 手順 4 で準備した全 Issue の Engineer を **Agent ツールで一斉に並列 spawn する**
-   - 各 Engineer へ渡す情報: Issue 番号・タイトル・本文・`worktree_path`・`branch`
-6. すべての Engineer の完了を待つ
-7. 各 Issue の PR に対して `evaluate_risk` でリスク判定する
-   - LOW / MEDIUM: `merge_pr` を実行する
-   - HIGH: PR にコメントを投稿してスキップする
-8. マージ済みの worktree を `close_worktree` で削除する
+1. If a `.hermit-paused` file exists in the project root, stop here (paused)
+2. Retrieve open Issues with `list_issues`
+3. If there are no Issues, stop here (will recheck on next loop)
+4. For each Issue (up to 4 at a time):
+   a. Mark as in-progress with `assign_issue`
+   b. Create a worktree with `create_worktree` (base_branch: default branch)
+5. **Spawn all Engineers for the Issues prepared in step 4 in parallel at once using the Agent tool**
+   - Information to pass to each Engineer: Issue number, title, body, `worktree_path`, `branch`
+6. Wait for all Engineers to complete
+7. Run `evaluate_risk` on the PR for each Issue
+   - LOW / MEDIUM: run `merge_pr`
+   - HIGH: post a comment on the PR and skip
+8. Delete merged worktrees with `close_worktree`
