@@ -1,4 +1,6 @@
-Superintendentとして1サイクル実行してください。
+Superintendentとして、以下のサイクルを `/loop 270s` を使って繰り返し実行してください。
+
+各サイクルの内容：
 
 1. プロジェクトルートに `.hermit-paused` ファイルが存在する場合はここで終了してください（一時停止中）
 2. `list_issues` で未着手 Issue を取得する

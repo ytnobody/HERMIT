@@ -91,25 +91,13 @@ cd your-project   # hermit init を実行したディレクトリ
 claude
 ```
 
-`CLAUDE.md` が自動的に読み込まれ、追加の指示なしに Superintendent として動作を開始します。Issue がなければ 60 秒待機して再確認するサイクルを繰り返します。
-
-### 長時間・継続運転する場合
-
-Claude Code はコンテキスト上限に達するとループが止まります。`/loop` と `/hermit` カスタムコマンドを組み合わせると、定期的にコンテキストをリセットしながら継続できます。
-
-Claude Code のプロンプトで以下を入力してください：
-
-```
-/loop 270s /hermit
-```
-
-これにより 270 秒ごとに `/hermit`（Superintendent 1サイクル）が再起動し、コンテキスト枯渇を防ぎながら Issue を監視し続けます。
-
-`/hermit` は `.claude/commands/hermit.md` で定義されたプロジェクトカスタムコマンドです。1回だけ実行したい場合は単体で使えます：
+### ステップ 3: Superintendent ループを開始する
 
 ```
 /hermit
 ```
+
+これだけです。`/hermit` は内部で `/loop 270s` を呼び出し、270 秒ごとにコンテキストをリセットしながら Superintendent サイクルを継続します。Issue がなければ次のループまで待機し、あれば実装・マージまで自動処理します。
 
 ### Superintendent のサイクル
 
