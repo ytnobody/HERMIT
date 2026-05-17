@@ -5,8 +5,8 @@ import (
 	gh "github.com/ytnobody/hermit/internal/github"
 )
 
-func Serve(client *gh.Client, rateLimitThreshold int) error {
+func Serve(client *gh.Client, rateLimitThreshold int, rootDir string) error {
 	s := server.NewMCPServer("hermit", "1.0.0")
-	registerTools(s, client, rateLimitThreshold)
+	registerTools(s, client, rateLimitThreshold, rootDir)
 	return server.ServeStdio(s)
 }
