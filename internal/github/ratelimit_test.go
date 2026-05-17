@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,7 +18,7 @@ import (
 func newTestClient(t *testing.T, mux *http.ServeMux) (*Client, func()) {
 	t.Helper()
 	srv := httptest.NewServer(mux)
-	ghClient := gogithub.NewClient(oauth2.NewClient(nil, nil))
+	ghClient := gogithub.NewClient(oauth2.NewClient(context.Background(), nil))
 	baseURL, _ := url.Parse(srv.URL + "/")
 	ghClient.BaseURL = baseURL
 	ghClient.UploadURL = baseURL
