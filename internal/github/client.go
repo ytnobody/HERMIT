@@ -234,3 +234,134 @@ func (c *Client) CloseIssue(number int, comment string) error {
 
 func (c *Client) Owner() string { return c.owner }
 func (c *Client) Repo() string  { return c.repo }
+
+// ReviewPR fetches the PR files and generates a structured review comment.
+// It performs static analysis only — no AI/LLM calls.
+func (c *Client) ReviewPR(num int) (string, error) {
+	pr, _, err := c.gh.PullRequests.Get(context.Background(), c.owner, c.repo, num)
+	if err != nil {
+		return "", fmt.Errorf("get PR: %w", err)
+	}
+	files, _, err := c.gh.PullRequests.ListFiles(context.Background(), c.owner, c.repo, num, nil)
+	if err != nil {
+		return "", fmt.Errorf("list PR files: %w", err)
+	}
+
+	// Build PRFile slice for risk evaluation
+	var prFiles []PRFile
+	for _, f := range files {
+		prFiles = append(prFiles, PRFile{
+			Filename:  f.GetFilename(),
+			Additions: f.GetAdditions(),
+			Deletions: f.GetDeletions(),
+		})
+	}
+
+	additions := pr.GetAdditions()
+	deletions := pr.GetDeletions()
+
+	// Checklist checks
+	hasTests := false
+	hasDocs := false
+	for _, f := range files {
+		name := f.GetFilename()
+		if strings.HasSuffix(name, "_test.go") {
+			hasTests = true
+		}
+		if strings.HasPrefix(name, "docs/") || strings.HasSuffix(name, ".md") {
+			hasDocs = true
+		}
+	}
+
+	// Risk assessment
+	level, reasons := reviewEvaluate(prFiles, additions, deletions)
+
+	// Format comment
+	var sb strings.Builder
+	sb.WriteString("## HERMIT Automated PR Review\n\n")
+
+	// File change summary
+	sb.WriteString("### File Change Summary\n\n")
+	sb.WriteString(fmt.Sprintf("- **Files changed**: %d\n", len(files)))
+	sb.WriteString(fmt.Sprintf("- **Lines added**: +%d\n", additions))
+	sb.WriteString(fmt.Sprintf("- **Lines removed**: -%d\n", deletions))
+	sb.WriteString("\n")
+
+	// Risk assessment
+	sb.WriteString("### Risk Assessment\n\n")
+	sb.WriteString(fmt.Sprintf("**Level**: %s\n", level))
+	if len(reasons) > 0 {
+		sb.WriteString("\nReasons:\n")
+		for _, r := range reasons {
+			sb.WriteString(fmt.Sprintf("- %s\n", r))
+		}
+	}
+	sb.WriteString("\n")
+
+	// Checklist
+	sb.WriteString("### Checklist\n\n")
+	testMark := "[ ]"
+	if hasTests {
+		testMark = "[x]"
+	}
+	docMark := "[ ]"
+	if hasDocs {
+		docMark = "[x]"
+	}
+	// Breaking changes: heuristic — deletions >= 50 or high-risk path changes
+	breakingChanges := deletions >= 50 || level == "HIGH"
+	breakMark := "[ ]"
+	if breakingChanges {
+		breakMark = "[x]"
+	}
+	sb.WriteString(fmt.Sprintf("- %s Tests present (`_test.go` files changed)\n", testMark))
+	sb.WriteString(fmt.Sprintf("- %s Docs updated (`docs/` or `.md` files changed)\n", docMark))
+	sb.WriteString(fmt.Sprintf("- %s Possible breaking changes (large deletions or HIGH risk path)\n", breakMark))
+
+	return sb.String(), nil
+}
+
+// reviewEvaluate is a local wrapper that returns Level as a plain string.
+// It mirrors risk.Evaluate logic but avoids an import cycle.
+// The actual risk.Evaluate is used in the MCP tool layer.
+func reviewEvaluate(files []PRFile, additions, deletions int) (string, []string) {
+	total := additions + deletions
+	var reasons []string
+
+	highPaths := []string{"cmd/", "go.mod", ".github/"}
+
+	if len(files) >= 20 {
+		reasons = append(reasons, "20 or more files changed")
+	}
+	if total >= 500 {
+		reasons = append(reasons, "500 or more lines changed")
+	}
+	for _, f := range files {
+		for _, p := range highPaths {
+			if strings.HasPrefix(f.Filename, p) || f.Filename == p {
+				reasons = append(reasons, f.Filename+" is in a high-risk path")
+			}
+		}
+	}
+	if len(reasons) > 0 {
+		return "HIGH", reasons
+	}
+
+	if len(files) >= 10 {
+		reasons = append(reasons, "10 or more files changed")
+	}
+	if total >= 200 {
+		reasons = append(reasons, "200 or more lines changed")
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.Filename, "internal/") {
+			reasons = append(reasons, f.Filename+" has changes in internal core")
+			break
+		}
+	}
+	if len(reasons) > 0 {
+		return "MEDIUM", reasons
+	}
+
+	return "LOW", nil
+}
