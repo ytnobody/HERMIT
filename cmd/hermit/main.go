@@ -15,6 +15,7 @@ import (
 	"github.com/BurntSushi/toml"
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/mcp"
+	"github.com/ytnobody/hermit/internal/permissions"
 )
 
 //go:embed templates/*
@@ -177,14 +178,30 @@ func cmdInit() {
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
 	writeTemplate("templates/CLAUDE.md.tmpl", "CLAUDE.md", struct {
-		MaxEngineers     int
+		MaxEngineers       int
 		ProjectCodingRules string
 	}{MaxEngineers: maxEng, ProjectCodingRules: "プロジェクト固有のコーディング規約をここに記述してください。"})
 
+	// Generate .claude/settings.json so Claude Code runs autonomously without
+	// confirmation prompts during the hermit loop.
+	if err := writeClaudeSettings(); err != nil {
+		fatal("failed to write .claude/settings.json: " + err.Error())
+	}
+
 	fmt.Println("\n✓ harness.toml と CLAUDE.md を生成しました。")
+	fmt.Println("✓ .claude/settings.json を生成しました（自律実行モード）。")
 	fmt.Println("次のステップ:")
 	fmt.Println("  1. CLAUDE.md の「コーディング規約」セクションを編集する")
 	fmt.Println("  2. GITHUB_TOKEN を設定して `hermit serve` を起動する")
+}
+
+// writeClaudeSettings creates .claude/settings.json in the current directory
+// with the comprehensive permission set required for autonomous hermit operation.
+func writeClaudeSettings() error {
+	if err := os.MkdirAll(".claude", 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(".claude", "settings.json"), permissions.DefaultSettingsJSON(), 0o644)
 }
 
 func writeTemplate(tmplPath, outPath string, data any) {
