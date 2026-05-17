@@ -32,12 +32,13 @@ cd /tmp
 sha256sum -c hermit.sha256
 cd - > /dev/null
 
-install -m 755 /tmp/hermit "${HOME}/.local/bin/hermit"
+INSTALL_PATH="${HOME}/.local/bin/hermit"
+install -m 755 /tmp/hermit "$INSTALL_PATH"
 rm -f /tmp/hermit /tmp/hermit.sha256
 
-echo "Installed hermit to ${HOME}/.local/bin/hermit"
+echo "Installed hermit to $INSTALL_PATH"
 
-hermit install
+"$INSTALL_PATH" install
 
 echo ""
 echo "HERMIT installed successfully!"

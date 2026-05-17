@@ -114,6 +114,24 @@ func cmdServe() {
 }
 
 func cmdInstall() {
+	execPath, err := os.Executable()
+	if err != nil {
+		fatal("failed to resolve hermit binary path: " + err.Error())
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		fatal("failed to resolve symlink for hermit binary: " + err.Error())
+	}
+
+	// cwd is where harness.toml lives, not the binary's directory.
+	cwd, err := os.Getwd()
+	if err != nil {
+		fatal("failed to get working directory: " + err.Error())
+	}
+	if _, err := os.Stat("harness.toml"); os.IsNotExist(err) {
+		fatal("harness.toml が見つかりません。プロジェクトルートで `hermit install` を実行してください。")
+	}
+
 	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
 
 	data, err := os.ReadFile(settingsPath)
@@ -135,8 +153,9 @@ func cmdInstall() {
 		mcpServers = make(map[string]any)
 	}
 	mcpServers["hermit"] = map[string]any{
-		"command": "hermit",
+		"command": execPath,
 		"args":    []string{"serve"},
+		"cwd":     cwd,
 		"env": map[string]string{
 			"GITHUB_TOKEN": "${GITHUB_TOKEN}",
 		},
@@ -154,6 +173,25 @@ func cmdInstall() {
 		fatal(err.Error())
 	}
 	fmt.Println("✓ HERMIT MCP server registered in", settingsPath)
+
+	// Symlink binary to ~/.local/bin so `hermit` is available in PATH.
+	localBin := filepath.Join(os.Getenv("HOME"), ".local", "bin")
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not create %s: %v\n", localBin, err)
+	} else {
+		linkPath := filepath.Join(localBin, "hermit")
+		if linkPath != execPath {
+			_ = os.Remove(linkPath)
+			if err := os.Symlink(execPath, linkPath); err != nil {
+				fmt.Fprintf(os.Stderr, "warn: could not symlink hermit to %s: %v\n", linkPath, err)
+			} else {
+				fmt.Println("✓ hermit symlinked to", linkPath)
+			}
+		}
+	}
+
+	fmt.Println("")
+	fmt.Println("⚠  Claude Code を再起動すると MCP ツールが有効になります。")
 }
 
 func cmdInit() {
@@ -226,6 +264,9 @@ func writeTemplate(tmplPath, outPath string, data any) {
 func loadConfig() Config {
 	var cfg Config
 	if _, err := toml.DecodeFile("harness.toml", &cfg); err != nil {
+		if os.IsNotExist(err) {
+			fatal("harness.toml が見つかりません。プロジェクトルートで `hermit init` を実行してください。")
+		}
 		fatal("failed to load harness.toml: " + err.Error())
 	}
 	return cfg
