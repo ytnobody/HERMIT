@@ -6,6 +6,7 @@ rate_limit_threshold = 10
 [agent]
 max_engineers = {{ .MaxEngineers }}
 language      = "{{ .Language }}"
+# loop_interval = 270  # Superintendent cycle interval in seconds (default: 270)
 
 [model]
 superintendent = "{{ .SuperintendentModel }}"
