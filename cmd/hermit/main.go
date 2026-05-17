@@ -40,6 +40,10 @@ type Config struct {
 		Superintendent string `toml:"superintendent"`
 		Engineer       string `toml:"engineer"`
 	} `toml:"model"`
+	Notification struct {
+		WebhookURL string `toml:"webhook_url"`
+		Type       string `toml:"type"`
+	} `toml:"notification"`
 }
 
 // ModelPreset defines superintendent/engineer model combinations.
@@ -241,7 +245,7 @@ func cmdServe() {
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	prefix := resolveBranchPrefix(cfg)
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type); err != nil {
 		fatal(err.Error())
 	}
 }
