@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/git"
+	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int) {
+func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("未着手の GitHub Issue 一覧を返す"),
@@ -106,8 +108,10 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 
 	s.AddTool(
 		mcp.NewTool("merge_pr",
-			mcp.WithDescription("CI 通過確認後に PR をマージする。HIGH リスクの場合は拒否してコメントを投稿する"),
+			mcp.WithDescription("CI 通過確認後に PR をマージし、ワークツリーを削除してレッスンを採点する。HIGH リスクの場合は拒否してコメントを投稿する"),
 			mcp.WithNumber("pr_number", mcp.Description("PR 番号"), mcp.Required()),
+			mcp.WithString("worktree_path", mcp.Description("マージ後に削除するワークツリーのパス（省略可）")),
+			mcp.WithString("branch", mcp.Description("マージ後に削除するブランチ名（省略可）")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("pr_number")
@@ -132,7 +136,29 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			if err := client.MergePR(num); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			return mcp.NewToolResultText(`{"merged":true}`), nil
+
+			// Clean up worktree if provided
+			wtPath := req.GetString("worktree_path", "")
+			branch := req.GetString("branch", "")
+			if wtPath != "" && branch != "" {
+				_ = git.CloseWorktree(wtPath, branch)
+			}
+
+			// Score and record lesson
+			score, lesson, _ := lessons.ProcessMergedPR(
+				rootDir,
+				strings.ToUpper(string(level)),
+				false,
+				false,
+				false,
+			)
+
+			result := map[string]any{"merged": true, "score": score}
+			if lesson != "" {
+				result["lesson"] = lesson
+			}
+			b, _ := json.Marshal(result)
+			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
 
@@ -159,24 +185,16 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 	)
 
 	s.AddTool(
-		mcp.NewTool("close_worktree",
-			mcp.WithDescription("マージ完了後にワークツリーとブランチを削除する"),
-			mcp.WithString("worktree_path", mcp.Description("ワークツリーのパス"), mcp.Required()),
-			mcp.WithString("branch", mcp.Description("削除するブランチ名"), mcp.Required()),
+		mcp.NewTool("get_lessons",
+			mcp.WithDescription("これまでの失敗から学んだ教訓一覧を返す。Superintendent はパトロール開始時にこれを参照して同じミスを繰り返さないようにする"),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			path, err := req.RequireString("worktree_path")
+			ls, err := lessons.ReadLessons(rootDir)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			branch, err := req.RequireString("branch")
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			if err := git.CloseWorktree(path, branch); err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			return mcp.NewToolResultText(`{"success":true}`), nil
+			b, _ := json.Marshal(map[string]any{"lessons": ls, "count": len(ls)})
+			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
 }

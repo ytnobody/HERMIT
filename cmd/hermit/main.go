@@ -197,10 +197,11 @@ func cmdServe() {
 		_ = os.Chdir(filepath.Dir(execPath))
 	}
 
+	rootDir, _ := os.Getwd()
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir); err != nil {
 		fatal(err.Error())
 	}
 }
