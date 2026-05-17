@@ -397,6 +397,11 @@ func cmdInit() {
 		ProjectCodingRules string
 	}{MaxEngineers: maxEng, ProjectCodingRules: "Describe your project-specific coding guidelines here."})
 
+	// Generate .github/ISSUE_TEMPLATE/hermit-task.md for Issue creation guidance.
+	if err := writeIssueTemplate(); err != nil {
+		fatal("failed to write .github/ISSUE_TEMPLATE/hermit-task.md: " + err.Error())
+	}
+
 	// Generate .claude/settings.json so Claude Code runs autonomously without
 	// confirmation prompts during the hermit loop.
 	if err := writeClaudeSettings(); err != nil {
@@ -404,6 +409,7 @@ func cmdInit() {
 	}
 
 	fmt.Println("\n✓ harness.toml and CLAUDE.md generated.")
+	fmt.Println("✓ .github/ISSUE_TEMPLATE/hermit-task.md generated.")
 	fmt.Println("✓ .claude/settings.json generated (autonomous operation mode).")
 	fmt.Println("Next steps:")
 	fmt.Println("  1. Edit the 'Coding Guidelines' section in CLAUDE.md")
@@ -417,6 +423,20 @@ func writeClaudeSettings() error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(".claude", "settings.json"), permissions.DefaultSettingsJSON(), 0o644)
+}
+
+// writeIssueTemplate creates .github/ISSUE_TEMPLATE/hermit-task.md in the
+// current directory so users can create well-structured Issues for HERMIT.
+func writeIssueTemplate() error {
+	dir := filepath.Join(".github", "ISSUE_TEMPLATE")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	content, err := templateFS.ReadFile("templates/hermit-task.md.tmpl")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "hermit-task.md"), content, 0o644)
 }
 
 func writeTemplate(tmplPath, outPath string, data any) {
