@@ -51,3 +51,12 @@ func CloseWorktree(path, branch string) error {
 	}
 	return nil
 }
+
+// CloseWorktreeForce removes a zombie worktree directory without attempting to
+// delete a branch (the branch may already be gone).
+func CloseWorktreeForce(path string) error {
+	if out, err := exec.Command("git", "worktree", "remove", "--force", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree remove: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}

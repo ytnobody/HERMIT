@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/git"
 	"github.com/ytnobody/hermit/internal/mcp"
 	"github.com/ytnobody/hermit/internal/permissions"
 )
@@ -90,6 +92,8 @@ func main() {
 		cmdVersion()
 	case "upgrade":
 		cmdUpgrade()
+	case "cleanup":
+		cmdCleanup()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		usage()
@@ -98,7 +102,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status|use|version|upgrade>")
+	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status|use|version|upgrade|cleanup>")
 }
 
 const pauseFile = ".hermit-paused"
@@ -216,6 +220,17 @@ func cmdServe() {
 	}
 
 	rootDir, _ := os.Getwd()
+
+	// Detect legacy resources and warn before starting the MCP server.
+	if branches := git.DetectLegacyBranches(); len(branches) > 0 {
+		log.Printf("WARNING: %d legacy branch(es) detected: %v", len(branches), branches)
+		log.Printf("         Run `hermit cleanup` to remove them.")
+	}
+	if zombies := git.DetectZombieWorktrees(); len(zombies) > 0 {
+		log.Printf("WARNING: %d zombie worktree(s) detected: %v", len(zombies), zombies)
+		log.Printf("         Run `hermit cleanup` to remove them.")
+	}
+
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
@@ -223,6 +238,41 @@ func cmdServe() {
 	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix); err != nil {
 		fatal(err.Error())
 	}
+}
+
+func cmdCleanup() {
+	fmt.Println("=== HERMIT Cleanup ===")
+
+	branches := git.DetectLegacyBranches()
+	if len(branches) == 0 {
+		fmt.Println("レガシーブランチ: なし")
+	} else {
+		fmt.Printf("レガシーブランチを削除します: %v\n", branches)
+		if err := git.CleanupLegacyBranches(branches); err != nil {
+			fmt.Fprintf(os.Stderr, "警告: %v\n", err)
+		} else {
+			fmt.Printf("  %d 件のレガシーブランチを削除しました。\n", len(branches))
+		}
+	}
+
+	zombies := git.DetectZombieWorktrees()
+	if len(zombies) == 0 {
+		fmt.Println("ゾンビワークツリー: なし")
+	} else {
+		fmt.Printf("ゾンビワークツリーを削除します: %v\n", zombies)
+		cleaned := 0
+		for _, path := range zombies {
+			out, err := exec.Command("git", "worktree", "remove", "--force", path).CombinedOutput()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  警告: worktree %s の削除に失敗: %s\n", path, strings.TrimSpace(string(out)))
+			} else {
+				cleaned++
+			}
+		}
+		fmt.Printf("  %d 件のゾンビワークツリーを削除しました。\n", cleaned)
+	}
+
+	fmt.Println("クリーンアップ完了。")
 }
 
 func cmdInstall() {
