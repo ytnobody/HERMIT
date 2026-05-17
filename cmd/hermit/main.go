@@ -23,8 +23,9 @@ var templateFS embed.FS
 
 type Config struct {
 	GitHub struct {
-		Owner string `toml:"owner"`
-		Repo  string `toml:"repo"`
+		Owner              string `toml:"owner"`
+		Repo               string `toml:"repo"`
+		RateLimitThreshold int    `toml:"rate_limit_threshold"`
 	} `toml:"github"`
 	Agent struct {
 		MaxEngineers int    `toml:"max_engineers"`
@@ -199,7 +200,7 @@ func cmdServe() {
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
-	if err := mcp.Serve(client); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold); err != nil {
 		fatal(err.Error())
 	}
 }

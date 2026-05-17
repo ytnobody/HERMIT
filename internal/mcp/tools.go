@@ -12,13 +12,16 @@ import (
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client) {
+func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("未着手の GitHub Issue 一覧を返す"),
 			mcp.WithString("label", mcp.Description("絞り込むラベル名（省略可）")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			label := req.GetString("label", "")
 			issues, err := client.ListOpenIssues(label)
 			if err != nil {
@@ -39,6 +42,9 @@ func registerTools(s *server.MCPServer, client *gh.Client) {
 			mcp.WithString("assignee", mcp.Description("アサインするユーザー名"), mcp.Required()),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			num, err := req.RequireInt("issue_number")
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
