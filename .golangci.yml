@@ -21,7 +21,8 @@ linters:
         - fmt.Fprintln
         - fmt.Fprintf
         - fmt.Println
-        - (bufio.Writer).Flush
+        - (*bufio.Writer).Flush
+        - (*bytes.Buffer).ReadFrom
     govet:
       enable-all: false
 
