@@ -7,8 +7,11 @@ linters:
     - staticcheck
     - gosimple
     - ineffassign
-    - gofmt
     - unused
+
+formatters:
+  enable:
+    - gofmt
 
 linters-settings:
   errcheck:
@@ -16,8 +19,6 @@ linters-settings:
     check-blank: false
   govet:
     enable-all: false
-  gofmt:
-    simplify: true
 
 run:
   timeout: 5m
