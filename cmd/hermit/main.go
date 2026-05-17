@@ -30,6 +30,7 @@ type Config struct {
 	Agent struct {
 		MaxEngineers int    `toml:"max_engineers"`
 		Language     string `toml:"language"`
+		BranchPrefix string `toml:"branch_prefix"`
 	} `toml:"agent"`
 	Model struct {
 		Superintendent string `toml:"superintendent"`
@@ -186,6 +187,23 @@ func githubToken() string {
 	return strings.TrimSpace(string(out))
 }
 
+// resolveBranchPrefix determines the branch prefix to use for worktrees.
+// Priority:
+//  1. cfg.Agent.BranchPrefix if set in harness.toml
+//  2. "hermit/<gh_login>" if gh CLI is available
+//  3. "hermit" as fallback (legacy format)
+func resolveBranchPrefix(cfg Config) string {
+	if cfg.Agent.BranchPrefix != "" {
+		return cfg.Agent.BranchPrefix
+	}
+	login, err := gh.GetGitHubLogin()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warn: GitHub ログイン名を取得できませんでした。フォールバックのブランチプレフィックス \"hermit\" を使用します:", err)
+		return "hermit"
+	}
+	return "hermit/" + login
+}
+
 func cmdServe() {
 	// Claude Code may not honour the cwd setting when spawning the MCP server.
 	// Resolve the binary's real location and chdir there so harness.toml is
@@ -201,7 +219,8 @@ func cmdServe() {
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir); err != nil {
+	prefix := resolveBranchPrefix(cfg)
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix); err != nil {
 		fatal(err.Error())
 	}
 }

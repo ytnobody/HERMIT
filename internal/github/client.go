@@ -3,10 +3,27 @@ package github
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"strings"
 
 	gogithub "github.com/google/go-github/v62/github"
 	"golang.org/x/oauth2"
 )
+
+// GetGitHubLogin returns the authenticated GitHub username by calling
+// "gh api user --jq '.login'". If the gh CLI is unavailable or fails,
+// an empty string and a non-nil error are returned.
+func GetGitHubLogin() (string, error) {
+	out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api user: %w", err)
+	}
+	login := strings.TrimSpace(string(out))
+	if login == "" {
+		return "", fmt.Errorf("gh api user returned empty login")
+	}
+	return login, nil
+}
 
 type Issue struct {
 	Number int
