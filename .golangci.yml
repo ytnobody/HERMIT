@@ -23,6 +23,10 @@ linters:
         - fmt.Println
         - (*bufio.Writer).Flush
         - (*bytes.Buffer).ReadFrom
+        - os.Setenv
+        - (*os.Process).Kill
+        - (*encoding/json.Encoder).Encode
+        - fmt.Fprint
     govet:
       enable-all: false
 
