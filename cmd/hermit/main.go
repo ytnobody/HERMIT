@@ -95,6 +95,8 @@ func main() {
 		cmdUpgrade()
 	case "cleanup":
 		cmdCleanup()
+	case "doctor":
+		cmdDoctor()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		usage()
@@ -103,7 +105,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status|use|version|upgrade|cleanup>")
+	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status|use|version|upgrade|cleanup|doctor>")
 }
 
 const pauseFile = ".hermit-paused"
