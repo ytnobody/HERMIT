@@ -185,6 +185,26 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 	)
 
 	s.AddTool(
+		mcp.NewTool("close_issue",
+			mcp.WithDescription("Closes a GitHub Issue, optionally posting a comment before closing"),
+			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
+			mcp.WithString("comment", mcp.Description("Comment to post before closing (optional)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			num, err := req.RequireInt("issue_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			comment := req.GetString("comment", "")
+			if err := client.CloseIssue(num, comment); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, _ := json.Marshal(map[string]any{"success": true, "issue_number": num})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
 		mcp.NewTool("get_lessons",
 			mcp.WithDescription("Returns a list of lessons learned from past failures. The Superintendent should consult this at the start of each patrol to avoid repeating the same mistakes."),
 		),

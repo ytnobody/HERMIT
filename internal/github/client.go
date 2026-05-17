@@ -168,5 +168,16 @@ func (c *Client) FindPRForBranch(branch string) (int, error) {
 	return prs[0].GetNumber(), nil
 }
 
+func (c *Client) CloseIssue(number int, comment string) error {
+	if comment != "" {
+		if err := c.PostComment(number, comment); err != nil {
+			return err
+		}
+	}
+	state := "closed"
+	_, _, err := c.gh.Issues.Edit(context.Background(), c.owner, c.repo, number, &gogithub.IssueRequest{State: &state})
+	return err
+}
+
 func (c *Client) Owner() string { return c.owner }
 func (c *Client) Repo() string  { return c.repo }
