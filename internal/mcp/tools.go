@@ -131,6 +131,28 @@ func registerTools(s *server.MCPServer, client *gh.Client) {
 	)
 
 	s.AddTool(
+		mcp.NewTool("add_issue_comment",
+			mcp.WithDescription("Issue または PR にコメントを投稿する（例: 曖昧さの確認や分割提案）"),
+			mcp.WithNumber("issue_number", mcp.Description("Issue 番号"), mcp.Required()),
+			mcp.WithString("body", mcp.Description("コメント本文"), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			num, err := req.RequireInt("issue_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			body, err := req.RequireString("body")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if err := client.PostComment(num, body); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(`{"success":true}`), nil
+		},
+	)
+
+	s.AddTool(
 		mcp.NewTool("close_worktree",
 			mcp.WithDescription("マージ完了後にワークツリーとブランチを削除する"),
 			mcp.WithString("worktree_path", mcp.Description("ワークツリーのパス"), mcp.Required()),
