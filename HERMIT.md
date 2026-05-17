@@ -85,7 +85,7 @@ hermit/
 
 ## 4. MCP Tool Specifications
 
-HERMIT provides the following 6 MCP tools. No more will be added.
+HERMIT provides the following MCP tools.
 
 ### `list_issues`
 
@@ -162,6 +162,90 @@ Removes the worktree and branch after a merge is complete.
 ```json
 // Input
 { "worktree_path": "/path/to/worktree", "branch": "hermit/issue-42" }
+
+// Output
+{ "success": true }
+```
+
+### `add_issue_comment`
+
+Posts a comment to a GitHub Issue.
+
+```json
+// Input
+{ "issue_number": 42, "body": "comment text" }
+
+// Output
+{ "success": true }
+```
+
+### `close_issue`
+
+Closes a resolved GitHub Issue.
+
+```json
+// Input
+{ "issue_number": 42 }
+
+// Output
+{ "success": true }
+```
+
+### `list_prs`
+
+Returns a list of open pull requests.
+
+```json
+// Input
+{ "state": "open|closed|merged (optional, default: open)" }
+
+// Output
+[{ "number": 123, "title": "...", "branch": "...", "url": "..." }]
+```
+
+### `get_lessons`
+
+Returns lessons learned from past Issues and PRs to guide implementation.
+
+```json
+// Input
+{}
+
+// Output
+{ "lessons": ["..."] }
+```
+
+### `get_config`
+
+Returns current harness configuration values.
+
+```json
+// Input
+{}
+
+// Output
+{ "owner": "...", "repo": "...", "max_engineers": 4, "loop_interval": 120 }
+```
+
+### `review_pr`
+
+Performs static analysis on a PR and returns a review summary.
+
+```json
+// Input
+{ "pr_number": 123 }
+
+// Output
+{ "summary": "...", "risk_level": "LOW|MEDIUM|HIGH", "suggestions": ["..."] }
+```
+
+### `notify`
+
+Sends a notification via configured webhook (Slack, Discord, or generic).
+
+```json
+// Input
+{ "message": "..." }
 
 // Output
 { "success": true }
