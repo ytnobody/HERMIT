@@ -14,7 +14,7 @@ import (
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string) {
+func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("Returns a list of open GitHub Issues that have not been started"),
@@ -236,6 +236,16 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			b, _ := json.Marshal(map[string]any{"lessons": ls, "count": len(ls)})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_config",
+			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			b, _ := json.Marshal(map[string]any{"loop_interval": loopInterval})
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)

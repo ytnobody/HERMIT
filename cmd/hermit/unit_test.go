@@ -37,6 +37,53 @@ language = "en"
 	}
 }
 
+func TestLoadConfig_LoopIntervalDefault(t *testing.T) {
+	dir := t.TempDir()
+	// harness.toml without loop_interval → should default to 270
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[agent]
+max_engineers = 2
+language = "en"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Agent.LoopInterval != 270 {
+		t.Errorf("expected LoopInterval default 270, got %d", cfg.Agent.LoopInterval)
+	}
+}
+
+func TestLoadConfig_LoopIntervalCustom(t *testing.T) {
+	dir := t.TempDir()
+	// harness.toml with explicit loop_interval
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[agent]
+max_engineers = 2
+language = "en"
+loop_interval = 60
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Agent.LoopInterval != 60 {
+		t.Errorf("expected LoopInterval 60, got %d", cfg.Agent.LoopInterval)
+	}
+}
+
 func TestLoadConfig_Missing(t *testing.T) {
 	if os.Getenv("TEST_LOADCONFIG_MISSING") != "" {
 		dir := t.TempDir()

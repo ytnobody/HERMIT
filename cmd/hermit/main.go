@@ -34,6 +34,7 @@ type Config struct {
 		MaxEngineers int    `toml:"max_engineers"`
 		Language     string `toml:"language"`
 		BranchPrefix string `toml:"branch_prefix"`
+		LoopInterval int    `toml:"loop_interval"`
 	} `toml:"agent"`
 	Model struct {
 		Superintendent string `toml:"superintendent"`
@@ -240,7 +241,7 @@ func cmdServe() {
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	prefix := resolveBranchPrefix(cfg)
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval); err != nil {
 		fatal(err.Error())
 	}
 }
@@ -465,6 +466,9 @@ func loadConfig() Config {
 			fatal("harness.toml not found. Please run `hermit init` from the project root.")
 		}
 		fatal("failed to load harness.toml: " + err.Error())
+	}
+	if cfg.Agent.LoopInterval <= 0 {
+		cfg.Agent.LoopInterval = 270
 	}
 	return cfg
 }
