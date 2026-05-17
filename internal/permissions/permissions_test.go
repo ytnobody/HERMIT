@@ -11,6 +11,64 @@ import (
 	"github.com/ytnobody/hermit/internal/permissions"
 )
 
+// TestLoadSettings_FileNotFound covers the os.ReadFile error branch.
+func TestLoadSettings_FileNotFound(t *testing.T) {
+	_, err := permissions.LoadSettings("/nonexistent/path/settings.json")
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+// TestLoadSettings_InvalidJSON covers the json.Unmarshal error branch.
+func TestLoadSettings_InvalidJSON(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "settings.json")
+	os.WriteFile(path, []byte("not valid json {{"), 0o644)
+	_, err := permissions.LoadSettings(path)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+}
+
+// TestMatchPermission_MalformedGlob covers the filepath.Match error branch
+// (a Bash() pattern containing an unterminated character class).
+func TestMatchPermission_MalformedGlob(t *testing.T) {
+	s := &permissions.Settings{}
+	s.Permissions.Allow = []string{"Bash([invalid)"}
+	// A malformed glob should NOT match — it must not panic or return true.
+	if s.IsBashAllowed("git status") {
+		t.Error("malformed glob should not match any command")
+	}
+}
+
+// TestMatchPermission_NonBashPatternSkipped covers the early-return branch
+// inside matchPermission when the allow entry is not a Bash() pattern (e.g.
+// "Write", "Edit"). Such entries must be silently skipped so that a
+// subsequent Bash() entry can still grant access.
+func TestMatchPermission_NonBashPatternSkipped(t *testing.T) {
+	s := &permissions.Settings{}
+	// Non-Bash entries first, then a Bash prefix pattern.
+	s.Permissions.Allow = []string{"Write", "Edit", "Bash(git *)"}
+
+	if !s.IsBashAllowed("git status") {
+		t.Error("Bash(git *) should match 'git status' even with non-Bash entries preceding it")
+	}
+	if s.IsBashAllowed("go build ./...") {
+		t.Error("'go build ./...' should not be allowed by Bash(git *)")
+	}
+}
+
+// TestUncoveredCommands_SomeUncovered covers the append branch in UncoveredCommands.
+func TestUncoveredCommands_SomeUncovered(t *testing.T) {
+	s := &permissions.Settings{}
+	s.Permissions.Allow = []string{"Bash(git *)"}
+
+	uncovered := s.UncoveredCommands([]string{"git status", "go build ./..."})
+	if len(uncovered) != 1 || uncovered[0] != "go build ./..." {
+		t.Errorf("expected [\"go build ./...\"], got %v", uncovered)
+	}
+}
+
 // projectRoot returns the absolute path to the HERMIT project root by walking
 // up from the test file's directory.
 func projectRoot(t *testing.T) string {

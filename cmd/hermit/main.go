@@ -97,14 +97,23 @@ func githubToken() string {
 	}
 	out, err := exec.Command("gh", "auth", "token").Output()
 	if err != nil {
-		fatal("GITHUB_TOKEN が未設定で、gh auth token の実行にも失敗しました。\n" +
-			"  - 環境変数 GITHUB_TOKEN を設定するか\n" +
-			"  - gh auth login で認証してください")
+		fmt.Fprintln(os.Stderr, "warn: GITHUB_TOKEN が未設定で gh auth token も失敗しました。GitHub API 呼び出しは認証エラーになります。")
+		return ""
 	}
 	return strings.TrimSpace(string(out))
 }
 
 func cmdServe() {
+	// Claude Code may not honour the cwd setting when spawning the MCP server.
+	// Resolve the binary's real location and chdir there so harness.toml is
+	// always reachable via a relative path regardless of the OS working dir.
+	if execPath, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+			execPath = resolved
+		}
+		_ = os.Chdir(filepath.Dir(execPath))
+	}
+
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
@@ -114,20 +123,13 @@ func cmdServe() {
 }
 
 func cmdInstall() {
-	execPath, err := os.Executable()
-	if err != nil {
-		fatal("failed to resolve hermit binary path: " + err.Error())
-	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		fatal("failed to resolve symlink for hermit binary: " + err.Error())
+	execPath, _ := os.Executable()
+	if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+		execPath = resolved
 	}
 
 	// cwd is where harness.toml lives, not the binary's directory.
-	cwd, err := os.Getwd()
-	if err != nil {
-		fatal("failed to get working directory: " + err.Error())
-	}
+	cwd, _ := os.Getwd()
 	if _, err := os.Stat("harness.toml"); os.IsNotExist(err) {
 		fatal("harness.toml が見つかりません。プロジェクトルートで `hermit install` を実行してください。")
 	}
@@ -162,10 +164,7 @@ func cmdInstall() {
 	}
 	settings["mcpServers"] = mcpServers
 
-	b, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		fatal(err.Error())
-	}
+	b, _ := json.MarshalIndent(settings, "", "  ") // map[string]any is always serialisable
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
 		fatal(err.Error())
 	}
@@ -247,7 +246,7 @@ func writeTemplate(tmplPath, outPath string, data any) {
 	if err != nil {
 		fatal("template not found: " + tmplPath + ": " + err.Error())
 	}
-	t, err := template.New("").Parse(string(content))
+	t, err := template.New("").Option("missingkey=error").Parse(string(content))
 	if err != nil {
 		fatal("template parse error: " + err.Error())
 	}
@@ -286,7 +285,13 @@ func promptDefault(sc *bufio.Scanner, msg, def string) string {
 	return v
 }
 
-func fatal(msg string) {
+// fatalFunc is the function invoked by fatal(). Tests may replace it so that
+// error paths can be exercised in-process without calling os.Exit.
+var fatalFunc = func(msg string) {
 	fmt.Fprintln(os.Stderr, "error:", msg)
 	os.Exit(1)
+}
+
+func fatal(msg string) {
+	fatalFunc(msg)
 }
