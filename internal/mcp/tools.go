@@ -14,7 +14,7 @@ import (
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string) {
+func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("未着手の GitHub Issue 一覧を返す"),
@@ -77,7 +77,7 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			path, branch, err := git.CreateWorktree(num, base)
+			path, branch, err := git.CreateWorktree(num, base, branchPrefix)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
