@@ -14,6 +14,7 @@ import (
 	"text/template"
 
 	"github.com/BurntSushi/toml"
+
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/git"
 	"github.com/ytnobody/hermit/internal/mcp"

@@ -304,12 +304,12 @@ func TestProcessMergedPR(t *testing.T) {
 			wantLesson:   false, // score == 70, threshold is < 70
 		},
 		{
-			name:           "HIGH + CI failing: lesson generated",
-			prRiskLevel:    "HIGH",
-			ciWasFailing:   true,
-			wantMinScore:   50,
-			wantMaxScore:   50,
-			wantLesson:     true,
+			name:         "HIGH + CI failing: lesson generated",
+			prRiskLevel:  "HIGH",
+			ciWasFailing: true,
+			wantMinScore: 50,
+			wantMaxScore: 50,
+			wantLesson:   true,
 		},
 	}
 

@@ -75,11 +75,11 @@ func TestVerifyChecksum(t *testing.T) {
 	validHex := hex.EncodeToString(sum[:])
 
 	tests := []struct {
-		name        string
+		name         string
 		checksumData string
-		assetName   string
-		wantErr     bool
-		errContains string
+		assetName    string
+		wantErr      bool
+		errContains  string
 	}{
 		{
 			name:         "valid checksum",

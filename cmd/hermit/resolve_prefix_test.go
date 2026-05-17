@@ -11,11 +11,11 @@ import (
 // table-driven tests with fake 'gh' binaries to control the login output.
 func TestResolveBranchPrefix(t *testing.T) {
 	tests := []struct {
-		name           string
-		configPrefix   string  // harness.toml branch_prefix value (empty = not set)
-		fakGhLogin     string  // what the fake gh binary prints ("" means gh fails)
-		wantPrefix     string
-		wantContains   string  // alternative: check Contains instead of exact match
+		name         string
+		configPrefix string // harness.toml branch_prefix value (empty = not set)
+		fakGhLogin   string // what the fake gh binary prints ("" means gh fails)
+		wantPrefix   string
+		wantContains string // alternative: check Contains instead of exact match
 	}{
 		{
 			name:         "explicit branch_prefix in config takes priority",
