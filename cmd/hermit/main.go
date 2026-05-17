@@ -97,14 +97,23 @@ func githubToken() string {
 	}
 	out, err := exec.Command("gh", "auth", "token").Output()
 	if err != nil {
-		fatal("GITHUB_TOKEN が未設定で、gh auth token の実行にも失敗しました。\n" +
-			"  - 環境変数 GITHUB_TOKEN を設定するか\n" +
-			"  - gh auth login で認証してください")
+		fmt.Fprintln(os.Stderr, "warn: GITHUB_TOKEN が未設定で gh auth token も失敗しました。GitHub API 呼び出しは認証エラーになります。")
+		return ""
 	}
 	return strings.TrimSpace(string(out))
 }
 
 func cmdServe() {
+	// Claude Code may not honour the cwd setting when spawning the MCP server.
+	// Resolve the binary's real location and chdir there so harness.toml is
+	// always reachable via a relative path regardless of the OS working dir.
+	if execPath, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+			execPath = resolved
+		}
+		_ = os.Chdir(filepath.Dir(execPath))
+	}
+
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
