@@ -15,18 +15,25 @@ import (
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string) {
+func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
-			mcp.WithDescription("Returns a list of open GitHub Issues that have not been started"),
-			mcp.WithString("label", mcp.Description("Label name to filter by (optional)")),
+			mcp.WithDescription("Returns a list of open GitHub Issues that have not been started. In multi-repo mode all configured repos are queried."),
+			mcp.WithString("label", mcp.Description("Label name to filter by (optional, single-repo mode only)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			label := req.GetString("label", "")
-			issues, err := client.ListOpenIssues(label)
+			var issues []gh.Issue
+			var err error
+			if len(repos) > 0 {
+				// Multi-repo mode: label filter is set per-repo in RepoConfig.
+				issues, err = client.ListAllIssues(repos)
+			} else {
+				label := req.GetString("label", "")
+				issues, err = client.ListOpenIssues(label)
+			}
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -43,6 +50,8 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			mcp.WithDescription("Marks an Issue as in-progress (adds label + assigns)"),
 			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
 			mcp.WithString("assignee", mcp.Description("Username to assign"), mcp.Required()),
+			mcp.WithString("owner", mcp.Description("Repository owner (optional, defaults to primary repo)")),
+			mcp.WithString("repo", mcp.Description("Repository name (optional, defaults to primary repo)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
@@ -56,7 +65,9 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			if err := client.AssignIssue(num, assignee); err != nil {
+			owner := req.GetString("owner", "")
+			repo := req.GetString("repo", "")
+			if err := client.AssignIssueInRepo(num, assignee, owner, repo); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			return mcp.NewToolResultText(`{"success":true}`), nil
@@ -91,13 +102,17 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 		mcp.NewTool("evaluate_risk",
 			mcp.WithDescription("Returns the risk level based on the PR's change volume and impact area"),
 			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
+			mcp.WithString("owner", mcp.Description("Repository owner (optional, defaults to primary repo)")),
+			mcp.WithString("repo", mcp.Description("Repository name (optional, defaults to primary repo)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("pr_number")
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			status, err := client.GetPRStatus(num)
+			owner := req.GetString("owner", "")
+			repo := req.GetString("repo", "")
+			status, err := client.GetPRStatusInRepo(num, owner, repo)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -113,20 +128,24 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
 			mcp.WithString("worktree_path", mcp.Description("Path to the worktree to remove after merge (optional)")),
 			mcp.WithString("branch", mcp.Description("Branch name to remove after merge (optional)")),
+			mcp.WithString("owner", mcp.Description("Repository owner (optional, defaults to primary repo)")),
+			mcp.WithString("repo", mcp.Description("Repository name (optional, defaults to primary repo)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("pr_number")
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			status, err := client.GetPRStatus(num)
+			owner := req.GetString("owner", "")
+			repo := req.GetString("repo", "")
+			status, err := client.GetPRStatusInRepo(num, owner, repo)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			level, reasons := risk.Evaluate(status.Files, status.Additions, status.Deletions)
 			if level == risk.High {
 				msg := fmt.Sprintf("⚠️ HERMIT: Skipping auto-merge due to HIGH risk.\nReasons: %v", reasons)
-				_ = client.PostComment(num, msg)
+				_ = client.PostCommentInRepo(num, msg, owner, repo)
 				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "HIGH risk"})
 				return mcp.NewToolResultText(string(b)), nil
 			}
@@ -134,7 +153,7 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "CI failing"})
 				return mcp.NewToolResultText(string(b)), nil
 			}
-			if err := client.MergePR(num); err != nil {
+			if err := client.MergePRInRepo(num, owner, repo); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 

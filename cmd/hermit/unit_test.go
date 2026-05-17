@@ -37,6 +37,70 @@ language = "en"
 	}
 }
 
+func TestLoadConfig_MultiRepos(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "myorg"
+repo  = "primary"
+
+[[repos]]
+owner = "myorg"
+repo  = "frontend"
+label = "hermit"
+
+[[repos]]
+owner = "myorg"
+repo  = "backend"
+label = "hermit"
+
+[agent]
+max_engineers = 4
+language = "en"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.GitHub.Owner != "myorg" || cfg.GitHub.Repo != "primary" {
+		t.Errorf("unexpected primary github config: %+v", cfg.GitHub)
+	}
+	if len(cfg.Repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(cfg.Repos))
+	}
+	if cfg.Repos[0].Owner != "myorg" || cfg.Repos[0].Repo != "frontend" || cfg.Repos[0].Label != "hermit" {
+		t.Errorf("unexpected repos[0]: %+v", cfg.Repos[0])
+	}
+	if cfg.Repos[1].Owner != "myorg" || cfg.Repos[1].Repo != "backend" || cfg.Repos[1].Label != "hermit" {
+		t.Errorf("unexpected repos[1]: %+v", cfg.Repos[1])
+	}
+}
+
+func TestLoadConfig_SingleRepo_NoRepos(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "solo"
+repo  = "single"
+[agent]
+max_engineers = 1
+language = "en"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if len(cfg.Repos) != 0 {
+		t.Errorf("expected no repos in single-repo mode, got %d", len(cfg.Repos))
+	}
+}
+
 func TestLoadConfig_LoopIntervalDefault(t *testing.T) {
 	dir := t.TempDir()
 	// harness.toml without loop_interval → should default to 270

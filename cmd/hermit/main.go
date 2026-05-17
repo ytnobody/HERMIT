@@ -24,12 +24,22 @@ import (
 //go:embed templates/*
 var templateFS embed.FS
 
+// RepoConfig holds the owner, repo, and optional label filter for a single
+// repository entry in the [[repos]] array.
+type RepoConfig struct {
+	Owner string `toml:"owner"`
+	Repo  string `toml:"repo"`
+	Label string `toml:"label"`
+}
+
 type Config struct {
 	GitHub struct {
 		Owner              string `toml:"owner"`
 		Repo               string `toml:"repo"`
 		RateLimitThreshold int    `toml:"rate_limit_threshold"`
 	} `toml:"github"`
+	// Repos overrides the single [github] section when present.
+	Repos []RepoConfig `toml:"repos"`
 	Agent struct {
 		MaxEngineers int    `toml:"max_engineers"`
 		Language     string `toml:"language"`
@@ -245,7 +255,14 @@ func cmdServe() {
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	prefix := resolveBranchPrefix(cfg)
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type); err != nil {
+
+	// Convert []RepoConfig → []gh.RepoConfig for the MCP layer.
+	var repos []gh.RepoConfig
+	for _, r := range cfg.Repos {
+		repos = append(repos, gh.RepoConfig{Owner: r.Owner, Repo: r.Repo, Label: r.Label})
+	}
+
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos); err != nil {
 		fatal(err.Error())
 	}
 }
