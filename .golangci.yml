@@ -31,10 +31,6 @@ linters:
     govet:
       enable-all: false
 
-formatters:
-  enable:
-    - gofmt
-
 run:
   timeout: 5m
   tests: true
