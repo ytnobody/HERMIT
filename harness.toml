@@ -5,3 +5,7 @@ repo  = "HERMIT"
 [agent]
 max_engineers = 4
 language      = "ja"
+
+[model]
+superintendent = "claude-sonnet-4-5"
+engineer       = "claude-sonnet-4-5"
