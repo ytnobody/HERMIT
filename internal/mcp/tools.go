@@ -11,10 +11,11 @@ import (
 	"github.com/ytnobody/hermit/internal/git"
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/lessons"
+	"github.com/ytnobody/hermit/internal/notification"
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int) {
+func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("Returns a list of open GitHub Issues that have not been started"),
@@ -271,6 +272,29 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			b, _ := json.Marshal(map[string]any{"pr_number": num, "comment_posted": true})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("notify",
+			mcp.WithDescription("Sends a notification to the configured webhook (Slack, Discord, or generic). Silently no-ops if no webhook_url is configured."),
+			mcp.WithString("event", mcp.Description("Event name (e.g. issue_assigned, pr_merged, high_risk_detected)"), mcp.Required()),
+			mcp.WithString("message", mcp.Description("Human-readable notification message"), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			event, err := req.RequireString("event")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			message, err := req.RequireString("message")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if err := notification.Send(webhookURL, webhookType, event, message); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, _ := json.Marshal(map[string]any{"sent": webhookURL != "", "event": event})
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
