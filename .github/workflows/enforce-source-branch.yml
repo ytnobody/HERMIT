@@ -1,0 +1,18 @@
+name: Enforce source branch
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject PRs not from develop
+        run: |
+          if [ "${{ github.head_ref }}" != "develop" ]; then
+            echo "ERROR: PRs to main must come from the 'develop' branch."
+            echo "Source branch was: ${{ github.head_ref }}"
+            exit 1
+          fi
+          echo "Source branch is 'develop'. OK."
