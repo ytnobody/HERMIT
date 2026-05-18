@@ -230,14 +230,17 @@ func resolveBranchPrefix(cfg Config) string {
 }
 
 func cmdServe() {
-	// Claude Code may not honour the cwd setting when spawning the MCP server.
-	// Resolve the binary's real location and chdir there so harness.toml is
-	// always reachable via a relative path regardless of the OS working dir.
-	if execPath, err := os.Executable(); err == nil {
-		if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
-			execPath = resolved
+	// If harness.toml exists in the current working directory, use it as-is.
+	// Otherwise fall back to the binary's real location — Claude Code may not
+	// honour the cwd setting when spawning the MCP server, and in that case
+	// the binary lives next to harness.toml in the project root.
+	if _, err := os.Stat("harness.toml"); os.IsNotExist(err) {
+		if execPath, err := os.Executable(); err == nil {
+			if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+				execPath = resolved
+			}
+			_ = os.Chdir(filepath.Dir(execPath))
 		}
-		_ = os.Chdir(filepath.Dir(execPath))
 	}
 
 	rootDir, _ := os.Getwd()
