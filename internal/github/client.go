@@ -58,6 +58,23 @@ type PRInfo struct {
 	IssueNumber int    `json:"issue_number,omitempty"` // 0 means not detected
 }
 
+type IssueComment struct {
+	ID        int64  `json:"id"`
+	Author    string `json:"author"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type PRComment struct {
+	ID        int64  `json:"id"`
+	Author    string `json:"author"`
+	Body      string `json:"body"`
+	Path      string `json:"path"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 type PRFile struct {
 	Filename  string
 	Additions int
@@ -423,15 +440,6 @@ func (c *Client) CloseIssueInRepo(number int, comment, owner, repo string) error
 	return err
 }
 
-// IssueComment holds a single comment on a GitHub Issue or PR.
-type IssueComment struct {
-	ID        int64  `json:"id"`
-	Body      string `json:"body"`
-	Author    string `json:"author"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-}
-
 // GetIssueComments returns all comments on the given issue number.
 // since is an optional RFC3339 timestamp; when non-empty only comments
 // updated at or after that time are returned.
@@ -452,8 +460,8 @@ func (c *Client) GetIssueComments(number int, since string) ([]IssueComment, err
 	for _, c := range comments {
 		result = append(result, IssueComment{
 			ID:        c.GetID(),
-			Body:      c.GetBody(),
 			Author:    c.GetUser().GetLogin(),
+			Body:      c.GetBody(),
 			CreatedAt: c.GetCreatedAt().Format(time.RFC3339),
 			UpdatedAt: c.GetUpdatedAt().Format(time.RFC3339),
 		})
@@ -471,16 +479,6 @@ func (c *Client) GetDefaultBranch() (string, error) {
 
 func (c *Client) Owner() string { return c.owner }
 func (c *Client) Repo() string  { return c.repo }
-
-// PRComment holds a single inline review comment on a pull request.
-type PRComment struct {
-	ID        int64  `json:"id"`
-	Author    string `json:"author"`
-	Body      string `json:"body"`
-	Path      string `json:"path"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-}
 
 // GetRecentPRComments returns inline review comments on a pull request.
 // since is an optional RFC3339 timestamp; when non-empty only comments

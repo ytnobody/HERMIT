@@ -15,7 +15,28 @@ import (
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
+type githubClient interface {
+	CheckRateLimit(threshold int) error
+	ListOpenIssues(label string) ([]gh.Issue, error)
+	ListAllIssues(repos []gh.RepoConfig) ([]gh.Issue, error)
+	AssignIssue(number int, assignee string) error
+	AssignIssueInRepo(number int, assignee, owner, repo string) error
+	GetPRStatus(number int) (*gh.PRStatus, error)
+	GetPRStatusInRepo(number int, owner, repo string) (*gh.PRStatus, error)
+	PostComment(number int, body string) error
+	PostCommentInRepo(number int, body, owner, repo string) error
+	MergePR(number int) error
+	MergePRInRepo(number int, owner, repo string) error
+	CloseIssue(number int, comment string) error
+	ListOpenPRs(issueNum int) ([]gh.PRInfo, error)
+	ReviewPR(num int) (string, error)
+	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
+	GetDefaultBranch() (string, error)
+	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
+	GetRecentPRComments(prNumber int, since string) ([]gh.PRComment, error)
+}
+
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),

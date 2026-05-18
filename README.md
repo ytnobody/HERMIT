@@ -85,7 +85,7 @@ claude
 /hermit
 ```
 
-That's it. `/hermit` internally calls `/loop 270s`, resetting context every 270 seconds while continuing the Superintendent cycle. If there are no Issues it waits for the next loop; if there are Issues it automatically handles everything through implementation and merge.
+That's it. `/hermit` internally calls `/loop 120s`, resetting context every 120 seconds while continuing the Superintendent cycle. If there are no Issues it waits for the next loop; if there are Issues it automatically handles everything through implementation and merge.
 
 ### Superintendent Cycle
 
