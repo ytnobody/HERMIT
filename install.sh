@@ -19,7 +19,7 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-BINARY_URL="https://github.com/ytnobody/hermit/releases/download/${VERSION}/hermit_${OS}_${ARCH}"
+BINARY_URL="https://github.com/ytnobody/hermit/releases/download/${VERSION}/hermit-${OS}-${ARCH}"
 SHA256_URL="${BINARY_URL}.sha256"
 
 echo "Downloading HERMIT ${VERSION} for ${OS}/${ARCH}..."

@@ -56,6 +56,13 @@ jobs:
           git tag ${{ steps.version.outputs.version }}
           git push origin ${{ steps.version.outputs.version }}
 
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          for f in hermit-linux-amd64 hermit-linux-arm64 hermit-darwin-amd64 hermit-darwin-arm64 hermit-windows-amd64.exe; do
+            sha256sum "$f" | sed 's|'"$f"'|hermit|' > "${f}.sha256"
+          done
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -64,7 +71,12 @@ jobs:
             --generate-notes \
             --title "Release ${{ steps.version.outputs.version }}" \
             dist/hermit-linux-amd64 \
+            dist/hermit-linux-amd64.sha256 \
             dist/hermit-linux-arm64 \
+            dist/hermit-linux-arm64.sha256 \
             dist/hermit-darwin-amd64 \
+            dist/hermit-darwin-amd64.sha256 \
             dist/hermit-darwin-arm64 \
-            dist/hermit-windows-amd64.exe
+            dist/hermit-darwin-arm64.sha256 \
+            dist/hermit-windows-amd64.exe \
+            dist/hermit-windows-amd64.exe.sha256
