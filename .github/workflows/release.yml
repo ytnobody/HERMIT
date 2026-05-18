@@ -43,11 +43,11 @@ jobs:
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
 
-          GOOS=linux   GOARCH=amd64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-linux-amd64   ./cmd/hermit
-          GOOS=linux   GOARCH=arm64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-linux-arm64   ./cmd/hermit
-          GOOS=darwin  GOARCH=amd64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-darwin-amd64  ./cmd/hermit
-          GOOS=darwin  GOARCH=arm64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-darwin-arm64  ./cmd/hermit
-          GOOS=windows GOARCH=amd64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-windows-amd64.exe ./cmd/hermit
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-linux-amd64   ./cmd/hermit
+          CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-linux-arm64   ./cmd/hermit
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-darwin-amd64  ./cmd/hermit
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-darwin-arm64  ./cmd/hermit
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-X main.Version=${VERSION}" -o dist/hermit-windows-amd64.exe ./cmd/hermit
 
       - name: Create tag
         run: |
