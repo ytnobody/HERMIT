@@ -109,8 +109,8 @@ language      = "ja"
 				continue
 			}
 			tools, _ := msg.Result["tools"].([]any)
-			if len(tools) != 14 {
-				t.Errorf("expected 14 tools, got %d", len(tools))
+			if len(tools) != 15 {
+				t.Errorf("expected 15 tools, got %d", len(tools))
 			}
 			return
 		case <-deadline:

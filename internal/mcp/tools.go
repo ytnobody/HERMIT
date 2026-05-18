@@ -17,6 +17,20 @@ import (
 
 func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
 	s.AddTool(
+		mcp.NewTool("get_default_branch",
+			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			branch, err := client.GetDefaultBranch()
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, _ := json.Marshal(map[string]string{"default_branch": branch})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("Returns a list of open GitHub Issues that have not been started. In multi-repo mode all configured repos are queried."),
 			mcp.WithString("label", mcp.Description("Label name to filter by (optional, single-repo mode only)")),

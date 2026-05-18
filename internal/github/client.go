@@ -461,6 +461,14 @@ func (c *Client) GetIssueComments(number int, since string) ([]IssueComment, err
 	return result, nil
 }
 
+func (c *Client) GetDefaultBranch() (string, error) {
+	repo, _, err := c.gh.Repositories.Get(context.Background(), c.owner, c.repo)
+	if err != nil {
+		return "", err
+	}
+	return repo.GetDefaultBranch(), nil
+}
+
 func (c *Client) Owner() string { return c.owner }
 func (c *Client) Repo() string  { return c.repo }
 
