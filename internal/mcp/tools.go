@@ -15,7 +15,25 @@ import (
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
+type githubClient interface {
+	CheckRateLimit(threshold int) error
+	ListOpenIssues(label string) ([]gh.Issue, error)
+	ListAllIssues(repos []gh.RepoConfig) ([]gh.Issue, error)
+	AssignIssue(number int, assignee string) error
+	AssignIssueInRepo(number int, assignee, owner, repo string) error
+	GetPRStatus(number int) (*gh.PRStatus, error)
+	GetPRStatusInRepo(number int, owner, repo string) (*gh.PRStatus, error)
+	PostComment(number int, body string) error
+	PostCommentInRepo(number int, body, owner, repo string) error
+	MergePR(number int) error
+	MergePRInRepo(number int, owner, repo string) error
+	CloseIssue(number int, comment string) error
+	ListOpenPRs(issueNum int) ([]gh.PRInfo, error)
+	ReviewPR(num int) (string, error)
+	GetIssueComments(issueNumber int) ([]gh.IssueComment, error)
+}
+
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("Returns a list of open GitHub Issues that have not been started. In multi-repo mode all configured repos are queried."),
@@ -178,6 +196,28 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 				result["lesson"] = lesson
 			}
 			b, _ := json.Marshal(result)
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_issue_comments",
+			mcp.WithDescription("Issue のコメント一覧を返す"),
+			mcp.WithNumber("issue_number", mcp.Description("Issue 番号"), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			num, err := req.RequireInt("issue_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			comments, err := client.GetIssueComments(num)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(comments)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)

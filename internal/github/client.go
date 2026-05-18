@@ -57,6 +57,13 @@ type PRInfo struct {
 	IssueNumber int    `json:"issue_number,omitempty"` // 0 means not detected
 }
 
+type IssueComment struct {
+	ID        int64  `json:"id"`
+	Author    string `json:"author"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+}
+
 type PRFile struct {
 	Filename  string
 	Additions int
@@ -319,6 +326,23 @@ func (c *Client) FindPRForBranch(branch string) (int, error) {
 		return 0, fmt.Errorf("no open PR found for branch %s", branch)
 	}
 	return prs[0].GetNumber(), nil
+}
+
+func (c *Client) GetIssueComments(issueNumber int) ([]IssueComment, error) {
+	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, issueNumber, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]IssueComment, 0, len(comments))
+	for _, c := range comments {
+		result = append(result, IssueComment{
+			ID:        c.GetID(),
+			Author:    c.GetUser().GetLogin(),
+			Body:      c.GetBody(),
+			CreatedAt: c.GetCreatedAt().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	return result, nil
 }
 
 func (c *Client) CloseIssue(number int, comment string) error {
