@@ -115,7 +115,11 @@ func TestGetIssueComments_success(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected success, got error: %v", result.Content)
 	}
-	text := result.Content[0].(mcp.TextContent).Text
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	text := tc.Text
 	var got []gh.IssueComment
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
@@ -136,7 +140,11 @@ func TestGetIssueComments_empty(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected success, got error")
 	}
-	text := result.Content[0].(mcp.TextContent).Text
+	tc2, ok2 := result.Content[0].(mcp.TextContent)
+	if !ok2 {
+		t.Fatalf("expected TextContent")
+	}
+	text := tc2.Text
 	var got []gh.IssueComment
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
