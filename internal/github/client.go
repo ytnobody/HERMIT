@@ -443,7 +443,7 @@ func (c *Client) CloseIssueInRepo(number int, comment, owner, repo string) error
 // GetIssueComments returns all comments on the given issue number.
 // since is an optional RFC3339 timestamp; when non-empty only comments
 // updated at or after that time are returned.
-func (c *Client) GetIssueComments(issueNumber int, since string) ([]IssueComment, error) {
+func (c *Client) GetIssueComments(number int, since string) ([]IssueComment, error) {
 	opts := &gogithub.IssueListCommentsOptions{}
 	if since != "" {
 		t, err := time.Parse(time.RFC3339, since)
@@ -452,7 +452,7 @@ func (c *Client) GetIssueComments(issueNumber int, since string) ([]IssueComment
 		}
 		opts.Since = &t
 	}
-	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, issueNumber, opts)
+	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, number, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -480,9 +480,19 @@ func (c *Client) GetDefaultBranch() (string, error) {
 func (c *Client) Owner() string { return c.owner }
 func (c *Client) Repo() string  { return c.repo }
 
-// GetPRComments returns inline review comments on a pull request.
-func (c *Client) GetPRComments(prNumber int) ([]PRComment, error) {
-	comments, _, err := c.gh.PullRequests.ListComments(context.Background(), c.owner, c.repo, prNumber, nil)
+// GetRecentPRComments returns inline review comments on a pull request.
+// since is an optional RFC3339 timestamp; when non-empty only comments
+// updated at or after that time are returned.
+func (c *Client) GetRecentPRComments(prNumber int, since string) ([]PRComment, error) {
+	opts := &gogithub.PullRequestListCommentsOptions{}
+	if since != "" {
+		t, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			return nil, fmt.Errorf("invalid since timestamp %q: %w", since, err)
+		}
+		opts.Since = t
+	}
+	comments, _, err := c.gh.PullRequests.ListComments(context.Background(), c.owner, c.repo, prNumber, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -493,8 +503,8 @@ func (c *Client) GetPRComments(prNumber int) ([]PRComment, error) {
 			Author:    c.GetUser().GetLogin(),
 			Body:      c.GetBody(),
 			Path:      c.GetPath(),
-			CreatedAt: c.GetCreatedAt().Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: c.GetUpdatedAt().Format("2006-01-02T15:04:05Z"),
+			CreatedAt: c.GetCreatedAt().Format(time.RFC3339),
+			UpdatedAt: c.GetUpdatedAt().Format(time.RFC3339),
 		})
 	}
 	return result, nil

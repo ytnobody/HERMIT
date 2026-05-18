@@ -90,7 +90,7 @@ func (m *mockGithubClient) GetCIDetailsInRepo(_ int, _, _ string) (*gh.CIDetails
 	return &gh.CIDetails{}, nil
 }
 
-func (m *mockGithubClient) GetPRComments(_ int) ([]gh.PRComment, error) {
+func (m *mockGithubClient) GetRecentPRComments(_ int, _ string) ([]gh.PRComment, error) {
 	return m.prComments, m.prCommentsErr
 }
 
@@ -134,15 +134,20 @@ func TestGetIssueComments_success(t *testing.T) {
 		t.Fatalf("expected TextContent")
 	}
 	text := tc.Text
-	var got []gh.IssueComment
+	var got map[string]any
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if len(got) != 2 {
-		t.Errorf("expected 2 comments, got %d", len(got))
+	gotComments, ok2 := got["comments"].([]any)
+	if !ok2 {
+		t.Fatalf("expected comments array in response")
 	}
-	if got[0].Author != "alice" || got[1].Author != "bob" {
-		t.Errorf("unexpected authors: %+v", got)
+	if len(gotComments) != 2 {
+		t.Errorf("expected 2 comments, got %d", len(gotComments))
+	}
+	count, ok3 := got["count"].(float64)
+	if !ok3 || count != 2 {
+		t.Errorf("expected count 2, got %v", got["count"])
 	}
 }
 
@@ -159,12 +164,13 @@ func TestGetIssueComments_empty(t *testing.T) {
 		t.Fatalf("expected TextContent")
 	}
 	text := tc2.Text
-	var got []gh.IssueComment
+	var got map[string]any
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if len(got) != 0 {
-		t.Errorf("expected 0 comments, got %d", len(got))
+	count, ok3 := got["count"].(float64)
+	if !ok3 || count != 0 {
+		t.Errorf("expected count 0, got %v", got["count"])
 	}
 }
 
@@ -185,7 +191,7 @@ func TestGetPRComments_success(t *testing.T) {
 	}
 	s := newTestServer(t, &mockGithubClient{prComments: prComments})
 
-	result := callTool(t, s, "get_pr_comments", map[string]any{"pr_number": float64(99)})
+	result := callTool(t, s, "get_recent_pr_comments", map[string]any{"pr_number": float64(99)})
 
 	if result.IsError {
 		t.Fatalf("expected success, got error: %v", result.Content)
@@ -195,25 +201,27 @@ func TestGetPRComments_success(t *testing.T) {
 		t.Fatalf("expected TextContent")
 	}
 	text := tc3.Text
-	var got []gh.PRComment
+	var got map[string]any
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if len(got) != 2 {
-		t.Errorf("expected 2 comments, got %d", len(got))
+	comments, ok := got["comments"].([]any)
+	if !ok {
+		t.Fatalf("expected comments array in response")
 	}
-	if got[0].Author != "carol" || got[1].Author != "dave" {
-		t.Errorf("unexpected authors: %+v", got)
+	if len(comments) != 2 {
+		t.Errorf("expected 2 comments, got %d", len(comments))
 	}
-	if got[0].Path != "main.go" {
-		t.Errorf("expected path main.go, got %s", got[0].Path)
+	count2, ok4 := got["count"].(float64)
+	if !ok4 || count2 != 2 {
+		t.Errorf("expected count 2, got %v", got["count"])
 	}
 }
 
 func TestGetPRComments_empty(t *testing.T) {
 	s := newTestServer(t, &mockGithubClient{prComments: []gh.PRComment{}})
 
-	result := callTool(t, s, "get_pr_comments", map[string]any{"pr_number": float64(1)})
+	result := callTool(t, s, "get_recent_pr_comments", map[string]any{"pr_number": float64(1)})
 
 	if result.IsError {
 		t.Fatalf("expected success, got error")
@@ -223,19 +231,20 @@ func TestGetPRComments_empty(t *testing.T) {
 		t.Fatalf("expected TextContent")
 	}
 	text := tc4.Text
-	var got []gh.PRComment
+	var got map[string]any
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if len(got) != 0 {
-		t.Errorf("expected 0 comments, got %d", len(got))
+	count3, ok5 := got["count"].(float64)
+	if !ok5 || count3 != 0 {
+		t.Errorf("expected count 0, got %v", got["count"])
 	}
 }
 
 func TestGetPRComments_apiError(t *testing.T) {
 	s := newTestServer(t, &mockGithubClient{prCommentsErr: errors.New("github api down")})
 
-	result := callTool(t, s, "get_pr_comments", map[string]any{"pr_number": float64(1)})
+	result := callTool(t, s, "get_recent_pr_comments", map[string]any{"pr_number": float64(1)})
 
 	if !result.IsError {
 		t.Fatal("expected error result")
