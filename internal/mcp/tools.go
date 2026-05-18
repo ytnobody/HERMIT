@@ -12,7 +12,16 @@ import (
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client) {
+type githubClient interface {
+	ListOpenIssues(label string) ([]gh.Issue, error)
+	AssignIssue(number int, assignee string) error
+	GetPRStatus(number int) (*gh.PRStatus, error)
+	PostComment(number int, body string) error
+	MergePR(number int) error
+	GetIssueComments(issueNumber int) ([]gh.IssueComment, error)
+}
+
+func registerTools(s *server.MCPServer, client githubClient) {
 	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("未着手の GitHub Issue 一覧を返す"),
@@ -127,6 +136,28 @@ func registerTools(s *server.MCPServer, client *gh.Client) {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			return mcp.NewToolResultText(`{"merged":true}`), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_issue_comments",
+			mcp.WithDescription("Issue のコメント一覧を返す"),
+			mcp.WithNumber("issue_number", mcp.Description("Issue 番号"), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			num, err := req.RequireInt("issue_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			comments, err := client.GetIssueComments(num)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(comments)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
 
