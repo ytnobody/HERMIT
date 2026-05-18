@@ -472,6 +472,46 @@ func (c *Client) GetDefaultBranch() (string, error) {
 func (c *Client) Owner() string { return c.owner }
 func (c *Client) Repo() string  { return c.repo }
 
+// PRComment holds a single inline review comment on a pull request.
+type PRComment struct {
+	ID        int64  `json:"id"`
+	Author    string `json:"author"`
+	Body      string `json:"body"`
+	Path      string `json:"path"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// GetRecentPRComments returns inline review comments on a pull request.
+// since is an optional RFC3339 timestamp; when non-empty only comments
+// updated at or after that time are returned.
+func (c *Client) GetRecentPRComments(prNumber int, since string) ([]PRComment, error) {
+	opts := &gogithub.PullRequestListCommentsOptions{}
+	if since != "" {
+		t, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			return nil, fmt.Errorf("invalid since timestamp %q: %w", since, err)
+		}
+		opts.Since = t
+	}
+	comments, _, err := c.gh.PullRequests.ListComments(context.Background(), c.owner, c.repo, prNumber, opts)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]PRComment, 0, len(comments))
+	for _, c := range comments {
+		result = append(result, PRComment{
+			ID:        c.GetID(),
+			Author:    c.GetUser().GetLogin(),
+			Body:      c.GetBody(),
+			Path:      c.GetPath(),
+			CreatedAt: c.GetCreatedAt().Format(time.RFC3339),
+			UpdatedAt: c.GetUpdatedAt().Format(time.RFC3339),
+		})
+	}
+	return result, nil
+}
+
 // ReviewPR fetches the PR files and generates a structured review comment.
 // It performs static analysis only — no AI/LLM calls.
 func (c *Client) ReviewPR(num int) (string, error) {
