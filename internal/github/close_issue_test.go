@@ -54,7 +54,7 @@ func TestCloseIssue_WithComment(t *testing.T) {
 		}
 		bodyStr, ok := body["body"].(string)
 		if !ok {
-			t.Fatalf("expected body[\"body\"] to be a string, got %T", body["body"])
+			t.Fatalf("expected comment body to be a string, got %T", body["body"])
 		}
 		if !strings.Contains(bodyStr, "resolved") {
 			t.Errorf("expected comment body to contain 'resolved', got %v", bodyStr)

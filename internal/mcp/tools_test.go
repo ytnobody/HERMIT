@@ -78,8 +78,16 @@ func (m *mockGithubClient) ReviewPR(_ int) (string, error) {
 	return "", nil
 }
 
-func (m *mockGithubClient) GetIssueComments(_ int) ([]gh.IssueComment, error) {
+func (m *mockGithubClient) GetIssueComments(_ int, _ string) ([]gh.IssueComment, error) {
 	return m.comments, m.commentsErr
+}
+
+func (m *mockGithubClient) GetDefaultBranch() (string, error) {
+	return "main", nil
+}
+
+func (m *mockGithubClient) GetCIDetailsInRepo(_ int, _, _ string) (*gh.CIDetails, error) {
+	return &gh.CIDetails{}, nil
 }
 
 func (m *mockGithubClient) GetPRComments(_ int) ([]gh.PRComment, error) {

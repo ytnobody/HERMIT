@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v62/github"
 	"golang.org/x/oauth2"
@@ -62,6 +63,7 @@ type IssueComment struct {
 	Author    string `json:"author"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 type PRComment struct {
@@ -287,14 +289,97 @@ func (c *Client) IsCIPassing(prNumber int, sha string) (bool, error) {
 
 // IsCIPassingInRepo checks CI status for a specific repo. Pass empty strings
 // to use the client's primary owner/repo.
+//
+// Returns true when:
+//   - state == "success" (all checks passed)
+//   - state == "" (no state set)
+//   - total_count == 0 (no CI checks configured; treat as passing so repos
+//     without CI are not permanently blocked from auto-merge)
 func (c *Client) IsCIPassingInRepo(prNumber int, sha, owner, repo string) (bool, error) {
 	owner, repo = c.resolveRepo(owner, repo)
 	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
 	if err != nil {
 		return false, err
 	}
+	// No checks configured — GitHub returns state "pending" with total_count 0.
+	// Treat this as passing so repos without CI are not blocked from auto-merge.
+	if status.GetTotalCount() == 0 {
+		return true, nil
+	}
 	state := status.GetState()
 	return state == "success" || state == "", nil
+}
+
+// CICheckResult holds information about a single CI check.
+type CICheckResult struct {
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	Description string `json:"description"`
+	TargetURL   string `json:"target_url,omitempty"`
+}
+
+// CIDetails holds detailed CI/CD status for a PR.
+type CIDetails struct {
+	PRNumber   int             `json:"pr_number"`
+	SHA        string          `json:"sha"`
+	State      string          `json:"state"`
+	Passing    bool            `json:"passing"`
+	TotalCount int             `json:"total_count"`
+	Checks     []CICheckResult `json:"checks"`
+	FailedOnly []CICheckResult `json:"failed_only"`
+}
+
+// GetCIDetails returns detailed CI/CD status for a given PR including
+// per-check results and a list of failing checks.
+func (c *Client) GetCIDetails(prNumber int) (*CIDetails, error) {
+	return c.GetCIDetailsInRepo(prNumber, "", "")
+}
+
+// GetCIDetailsInRepo returns detailed CI/CD status for a PR in a specific
+// repo. Pass empty strings to use the client's primary owner/repo.
+func (c *Client) GetCIDetailsInRepo(prNumber int, owner, repo string) (*CIDetails, error) {
+	owner, repo = c.resolveRepo(owner, repo)
+
+	pr, _, err := c.gh.PullRequests.Get(context.Background(), owner, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("get PR: %w", err)
+	}
+	sha := pr.GetHead().GetSHA()
+
+	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get combined status: %w", err)
+	}
+
+	state := status.GetState()
+	passing := state == "success" || state == ""
+
+	var checks []CICheckResult
+	for _, s := range status.Statuses {
+		checks = append(checks, CICheckResult{
+			Name:        s.GetContext(),
+			State:       s.GetState(),
+			Description: s.GetDescription(),
+			TargetURL:   s.GetTargetURL(),
+		})
+	}
+
+	var failed []CICheckResult
+	for _, ch := range checks {
+		if ch.State == "failure" || ch.State == "error" {
+			failed = append(failed, ch)
+		}
+	}
+
+	return &CIDetails{
+		PRNumber:   prNumber,
+		SHA:        sha,
+		State:      state,
+		Passing:    passing,
+		TotalCount: len(checks),
+		Checks:     checks,
+		FailedOnly: failed,
+	}, nil
 }
 
 func (c *Client) MergePR(number int) error {
@@ -337,23 +422,6 @@ func (c *Client) FindPRForBranch(branch string) (int, error) {
 	return prs[0].GetNumber(), nil
 }
 
-func (c *Client) GetIssueComments(issueNumber int) ([]IssueComment, error) {
-	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, issueNumber, nil)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]IssueComment, 0, len(comments))
-	for _, c := range comments {
-		result = append(result, IssueComment{
-			ID:        c.GetID(),
-			Author:    c.GetUser().GetLogin(),
-			Body:      c.GetBody(),
-			CreatedAt: c.GetCreatedAt().Format("2006-01-02T15:04:05Z"),
-		})
-	}
-	return result, nil
-}
-
 func (c *Client) CloseIssue(number int, comment string) error {
 	return c.CloseIssueInRepo(number, comment, "", "")
 }
@@ -370,6 +438,43 @@ func (c *Client) CloseIssueInRepo(number int, comment, owner, repo string) error
 	state := "closed"
 	_, _, err := c.gh.Issues.Edit(context.Background(), owner, repo, number, &gogithub.IssueRequest{State: &state})
 	return err
+}
+
+// GetIssueComments returns all comments on the given issue number.
+// since is an optional RFC3339 timestamp; when non-empty only comments
+// updated at or after that time are returned.
+func (c *Client) GetIssueComments(issueNumber int, since string) ([]IssueComment, error) {
+	opts := &gogithub.IssueListCommentsOptions{}
+	if since != "" {
+		t, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			return nil, fmt.Errorf("invalid since timestamp %q: %w", since, err)
+		}
+		opts.Since = &t
+	}
+	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, issueNumber, opts)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]IssueComment, 0, len(comments))
+	for _, c := range comments {
+		result = append(result, IssueComment{
+			ID:        c.GetID(),
+			Author:    c.GetUser().GetLogin(),
+			Body:      c.GetBody(),
+			CreatedAt: c.GetCreatedAt().Format(time.RFC3339),
+			UpdatedAt: c.GetUpdatedAt().Format(time.RFC3339),
+		})
+	}
+	return result, nil
+}
+
+func (c *Client) GetDefaultBranch() (string, error) {
+	repo, _, err := c.gh.Repositories.Get(context.Background(), c.owner, c.repo)
+	if err != nil {
+		return "", err
+	}
+	return repo.GetDefaultBranch(), nil
 }
 
 func (c *Client) Owner() string { return c.owner }

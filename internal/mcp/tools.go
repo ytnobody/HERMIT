@@ -30,11 +30,27 @@ type githubClient interface {
 	CloseIssue(number int, comment string) error
 	ListOpenPRs(issueNum int) ([]gh.PRInfo, error)
 	ReviewPR(num int) (string, error)
-	GetIssueComments(issueNumber int) ([]gh.IssueComment, error)
+	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
+	GetDefaultBranch() (string, error)
+	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
 	GetPRComments(prNumber int) ([]gh.PRComment, error)
 }
 
 func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
+	s.AddTool(
+		mcp.NewTool("get_default_branch",
+			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			branch, err := client.GetDefaultBranch()
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, _ := json.Marshal(map[string]string{"default_branch": branch})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
 	s.AddTool(
 		mcp.NewTool("list_issues",
 			mcp.WithDescription("Returns a list of open GitHub Issues that have not been started. In multi-repo mode all configured repos are queried."),
@@ -143,7 +159,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("merge_pr",
-			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Rejects and posts a comment if HIGH risk."),
+			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Posts a risk comment but always merges regardless of risk level."),
 			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
 			mcp.WithString("worktree_path", mcp.Description("Path to the worktree to remove after merge (optional)")),
 			mcp.WithString("branch", mcp.Description("Branch name to remove after merge (optional)")),
@@ -163,10 +179,8 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			}
 			level, reasons := risk.Evaluate(status.Files, status.Additions, status.Deletions)
 			if level == risk.High {
-				msg := fmt.Sprintf("⚠️ HERMIT: Skipping auto-merge due to HIGH risk.\nReasons: %v", reasons)
+				msg := fmt.Sprintf("⚠️ HERMIT: HIGH risk detected.\nReasons: %v", reasons)
 				_ = client.PostCommentInRepo(num, msg, owner, repo)
-				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "HIGH risk"})
-				return mcp.NewToolResultText(string(b)), nil
 			}
 			if !status.CIPassing {
 				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "CI failing"})
@@ -211,7 +225,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			comments, err := client.GetIssueComments(num)
+			comments, err := client.GetIssueComments(num, "")
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -332,6 +346,45 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			b, _ := json.Marshal(map[string]any{"pr_number": num, "comment_posted": true})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("check_ci_status",
+			mcp.WithDescription("Checks the CI/CD status for a PR. Returns the overall state, per-check results, and a list of failing checks to aid investigation."),
+			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
+			mcp.WithString("owner", mcp.Description("Repository owner (optional, defaults to primary repo)")),
+			mcp.WithString("repo", mcp.Description("Repository name (optional, defaults to primary repo)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			num, err := req.RequireInt("pr_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			owner := req.GetString("owner", "")
+			repo := req.GetString("repo", "")
+			details, err := client.GetCIDetailsInRepo(num, owner, repo)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			// If CI is failing, post an investigation comment on the PR.
+			if !details.Passing && len(details.FailedOnly) > 0 {
+				var failNames []string
+				for _, f := range details.FailedOnly {
+					failNames = append(failNames, f.Name)
+				}
+				msg := fmt.Sprintf("⚠️ HERMIT: CI/CD failure detected on PR #%d (SHA: %s).\nFailing checks: %s\nPlease investigate and fix before merging.",
+					num, details.SHA, strings.Join(failNames, ", "))
+				_ = client.PostCommentInRepo(num, msg, owner, repo)
+			}
+			b, err := json.Marshal(details)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)

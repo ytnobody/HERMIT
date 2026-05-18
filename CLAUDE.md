@@ -16,9 +16,11 @@ Repeat the following cycle.
    - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
    - If the parallel count exceeds 4, process the first 4 and defer the rest to the next cycle
 6. Wait for all Engineers to complete
-7. Run `evaluate_risk` on the PR for each Issue
-   - LOW / MEDIUM: run `merge_pr`
-   - HIGH: post a comment on the PR and skip
+7. Run `check_ci_status` on the PR for each Issue
+   - If CI is failing: the tool automatically posts an investigation comment listing the failing checks; skip merging and wait for fixes
+   - If CI is passing: run `evaluate_risk`
+     - LOW / MEDIUM: run `merge_pr`
+     - HIGH: post a comment on the PR and skip
 8. Delete merged worktrees with `close_worktree`
 9. Return to step 1
 

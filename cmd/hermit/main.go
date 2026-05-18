@@ -37,6 +37,7 @@ type Config struct {
 		Owner              string `toml:"owner"`
 		Repo               string `toml:"repo"`
 		RateLimitThreshold int    `toml:"rate_limit_threshold"`
+		DefaultBranch      string `toml:"default_branch"`
 	} `toml:"github"`
 	// Repos overrides the single [github] section when present.
 	Repos []RepoConfig `toml:"repos"`
