@@ -257,5 +257,5 @@ repo  = "test-repo"
 	cmd := exec.Command(os.Args[0], "-test.run=TestMainSwitch_Doctor", "-test.v")
 	cmd.Env = append(os.Environ(), "TEST_MAIN_DOCTOR=1", "GITHUB_TOKEN=testtoken123")
 	// Ignore exit status since some checks may fail in CI
-	cmd.Run()
+	_ = cmd.Run()
 }
