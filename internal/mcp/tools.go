@@ -124,7 +124,7 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 
 	s.AddTool(
 		mcp.NewTool("merge_pr",
-			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Rejects and posts a comment if HIGH risk."),
+			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Posts a risk comment but always merges regardless of risk level."),
 			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
 			mcp.WithString("worktree_path", mcp.Description("Path to the worktree to remove after merge (optional)")),
 			mcp.WithString("branch", mcp.Description("Branch name to remove after merge (optional)")),
@@ -144,10 +144,8 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			}
 			level, reasons := risk.Evaluate(status.Files, status.Additions, status.Deletions)
 			if level == risk.High {
-				msg := fmt.Sprintf("⚠️ HERMIT: Skipping auto-merge due to HIGH risk.\nReasons: %v", reasons)
+				msg := fmt.Sprintf("⚠️ HERMIT: HIGH risk detected.\nReasons: %v", reasons)
 				_ = client.PostCommentInRepo(num, msg, owner, repo)
-				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "HIGH risk"})
-				return mcp.NewToolResultText(string(b)), nil
 			}
 			if !status.CIPassing {
 				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "CI failing"})
