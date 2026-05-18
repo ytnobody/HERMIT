@@ -11,7 +11,7 @@ Repeat the following cycle.
 3. If there are no Issues, wait 60 seconds and return to step 1
 4. For each Issue (up to 4 at a time):
    a. Mark as in-progress with `assign_issue` (assignee: your own username)
-   b. Create a worktree with `create_worktree` (base_branch: default branch)
+   b. Create a worktree with `create_worktree` (base_branch: `develop`)
 5. **Spawn all Engineers for the Issues prepared in step 4 in parallel at once using the Agent tool**
    - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
    - If the parallel count exceeds 4, process the first 4 and defer the rest to the next cycle

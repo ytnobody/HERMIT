@@ -15,7 +15,28 @@ import (
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
-func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
+type githubClient interface {
+	CheckRateLimit(threshold int) error
+	ListOpenIssues(label string) ([]gh.Issue, error)
+	ListAllIssues(repos []gh.RepoConfig) ([]gh.Issue, error)
+	AssignIssue(number int, assignee string) error
+	AssignIssueInRepo(number int, assignee, owner, repo string) error
+	GetPRStatus(number int) (*gh.PRStatus, error)
+	GetPRStatusInRepo(number int, owner, repo string) (*gh.PRStatus, error)
+	PostComment(number int, body string) error
+	PostCommentInRepo(number int, body, owner, repo string) error
+	MergePR(number int) error
+	MergePRInRepo(number int, owner, repo string) error
+	CloseIssue(number int, comment string) error
+	ListOpenPRs(issueNum int) ([]gh.PRInfo, error)
+	ReviewPR(num int) (string, error)
+	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
+	GetDefaultBranch() (string, error)
+	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
+	GetPRComments(prNumber int) ([]gh.PRComment, error)
+}
+
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -195,6 +216,28 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 	)
 
 	s.AddTool(
+		mcp.NewTool("get_issue_comments",
+			mcp.WithDescription("Issue のコメント一覧を返す"),
+			mcp.WithNumber("issue_number", mcp.Description("Issue 番号"), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			num, err := req.RequireInt("issue_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			comments, err := client.GetIssueComments(num, "")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(comments)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
 		mcp.NewTool("add_issue_comment",
 			mcp.WithDescription("Posts a comment on an Issue or PR (e.g. for clarification requests or split suggestions)"),
 			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
@@ -213,33 +256,6 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			return mcp.NewToolResultText(`{"success":true}`), nil
-		},
-	)
-
-	s.AddTool(
-		mcp.NewTool("get_issue_comments",
-			mcp.WithDescription("Returns comments on a GitHub Issue. Use the since parameter to retrieve only comments updated after a given timestamp (RFC3339), which lets the Superintendent detect new activity since the issue was last checked."),
-			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
-			mcp.WithString("since", mcp.Description("RFC3339 timestamp; only comments updated at or after this time are returned (optional)")),
-		),
-		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			num, err := req.RequireInt("issue_number")
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			since := req.GetString("since", "")
-			comments, err := client.GetIssueComments(num, since)
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			b, err := json.Marshal(map[string]any{"issue_number": num, "comments": comments, "count": len(comments)})
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
 
@@ -392,6 +408,28 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			b, _ := json.Marshal(map[string]any{"sent": webhookURL != "", "event": event})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_pr_comments",
+			mcp.WithDescription("Returns inline review comments on a pull request. Use this during the loop to check if a PR has received new review feedback."),
+			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			num, err := req.RequireInt("pr_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			comments, err := client.GetPRComments(num)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(comments)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)

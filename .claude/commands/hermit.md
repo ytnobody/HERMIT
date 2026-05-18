@@ -1,4 +1,4 @@
-As Superintendent, repeat the following cycle using `/loop 270s`.
+As Superintendent, repeat the following cycle using `/loop 120s`.
 
 Each cycle:
 
