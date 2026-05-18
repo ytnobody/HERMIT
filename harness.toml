@@ -2,6 +2,7 @@
 owner                = "ytnobody"
 repo                 = "HERMIT"
 rate_limit_threshold = 10
+default_branch       = "develop"
 
 [agent]
 max_engineers = 4
