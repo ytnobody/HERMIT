@@ -203,6 +203,33 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 	)
 
 	s.AddTool(
+		mcp.NewTool("get_issue_comments",
+			mcp.WithDescription("Returns comments on a GitHub Issue. Use the since parameter to retrieve only comments updated after a given timestamp (RFC3339), which lets the Superintendent detect new activity since the issue was last checked."),
+			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
+			mcp.WithString("since", mcp.Description("RFC3339 timestamp; only comments updated at or after this time are returned (optional)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			num, err := req.RequireInt("issue_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			since := req.GetString("since", "")
+			comments, err := client.GetIssueComments(num, since)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(map[string]any{"issue_number": num, "comments": comments, "count": len(comments)})
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
 		mcp.NewTool("close_issue",
 			mcp.WithDescription("Closes a GitHub Issue, optionally posting a comment before closing"),
 			mcp.WithNumber("issue_number", mcp.Description("Issue number"), mcp.Required()),
