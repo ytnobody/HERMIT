@@ -52,8 +52,12 @@ func TestCloseIssue_WithComment(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode comment body: %v", err)
 		}
-		if !strings.Contains(body["body"].(string), "resolved") {
-			t.Errorf("expected comment body to contain 'resolved', got %v", body["body"])
+		bodyStr, ok := body["body"].(string)
+		if !ok {
+			t.Fatalf("expected comment body to be a string, got %T", body["body"])
+		}
+		if !strings.Contains(bodyStr, "resolved") {
+			t.Errorf("expected comment body to contain 'resolved', got %v", bodyStr)
 		}
 		commentCalled = true
 		w.Header().Set("Content-Type", "application/json")

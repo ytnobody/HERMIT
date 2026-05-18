@@ -34,10 +34,6 @@ func TestExtractIssueNumber(t *testing.T) {
 	}
 }
 
-// prListResponse builds a minimal GitHub PullRequests.List JSON response.
-func prListResponse(prs []map[string]any) []map[string]any {
-	return prs
-}
 
 func TestListOpenPRs_All(t *testing.T) {
 	mux := http.NewServeMux()

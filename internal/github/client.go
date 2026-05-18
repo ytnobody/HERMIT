@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v62/github"
 	"golang.org/x/oauth2"
@@ -420,6 +421,44 @@ func (c *Client) CloseIssueInRepo(number int, comment, owner, repo string) error
 	state := "closed"
 	_, _, err := c.gh.Issues.Edit(context.Background(), owner, repo, number, &gogithub.IssueRequest{State: &state})
 	return err
+}
+
+// IssueComment holds a single comment on a GitHub Issue or PR.
+type IssueComment struct {
+	ID        int64  `json:"id"`
+	Body      string `json:"body"`
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// GetIssueComments returns all comments on the given issue number.
+// since is an optional RFC3339 timestamp; when non-empty only comments
+// updated at or after that time are returned.
+func (c *Client) GetIssueComments(number int, since string) ([]IssueComment, error) {
+	opts := &gogithub.IssueListCommentsOptions{}
+	if since != "" {
+		t, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			return nil, fmt.Errorf("invalid since timestamp %q: %w", since, err)
+		}
+		opts.Since = &t
+	}
+	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, number, opts)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]IssueComment, 0, len(comments))
+	for _, c := range comments {
+		result = append(result, IssueComment{
+			ID:        c.GetID(),
+			Body:      c.GetBody(),
+			Author:    c.GetUser().GetLogin(),
+			CreatedAt: c.GetCreatedAt().Format(time.RFC3339),
+			UpdatedAt: c.GetUpdatedAt().Format(time.RFC3339),
+		})
+	}
+	return result, nil
 }
 
 func (c *Client) Owner() string { return c.owner }
