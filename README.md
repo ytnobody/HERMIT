@@ -2,125 +2,125 @@
 
 **Harness for Engineer Role Management via Interactive Tasks**
 
-Claude Code のネイティブ機能（Agent ツール・MCP）を活用したシンプルなマルチエージェント開発自動化ハーネス。
+A simple multi-agent development automation harness leveraging Claude Code's native features (Agent tool and MCP).
 
-GitHub Issue を自動的に拾い、Agentを並列起動して実装・PR作成・マージまでを自律的に回します。
-
----
-
-## 設計思想
-
-> **「Claude Code が主役。HERMIT はドメイン操作の道具箱に徹する。」**
-
-- AI推論・オーケストレーション・コンテキスト管理は **すべて Claude Code に委譲**
-- HERMIT は GitHub/Git 操作の薄いラッパーを **MCP サーバー** として提供するだけ
-- コード量 ~700 行（参考: 同等の Go バイナリ実装では ~5,000 行）
+Automatically picks up GitHub Issues, spawns Agents in parallel, and autonomously handles implementation, PR creation, and merging.
 
 ---
 
-## インストール
+## Design Philosophy
+
+> **"Claude Code is the star. HERMIT is just the toolbox for domain operations."**
+
+- AI reasoning, orchestration, and context management are **fully delegated to Claude Code**
+- HERMIT only provides a thin wrapper for GitHub/Git operations as an **MCP server**
+- Code volume ~700 lines (for reference: an equivalent Go binary implementation would be ~5,000 lines)
+
+---
+
+## Installation
 
 ```sh
 curl -sSL https://raw.githubusercontent.com/ytnobody/hermit/main/install.sh | sh
 ```
 
-`~/.local/bin/hermit` にバイナリを配置し、Claude Code の MCP サーバーとして自動登録します。
+Places the binary at `~/.local/bin/hermit` and automatically registers it as a Claude Code MCP server.
 
-### 前提条件
+### Prerequisites
 
-- [Claude Code](https://claude.ai/code) がインストールされていること
-- [gh CLI](https://cli.github.com/) で認証済みであること（`gh auth login`）、または `GITHUB_TOKEN` 環境変数が設定されていること
-- `git` コマンドが使えること
+- [Claude Code](https://claude.ai/code) must be installed
+- Authenticated with [gh CLI](https://cli.github.com/) (`gh auth login`), or `GITHUB_TOKEN` environment variable must be set
+- `git` command must be available
 
 ---
 
-## プロジェクトへの導入
+## Setting Up a Project
 
 ```sh
 cd your-project
 hermit init
 ```
 
-対話形式で以下を入力します：
+Enter the following interactively:
 
-| 項目 | 説明 |
+| Field | Description |
 |---|---|
-| GitHub owner | org 名またはユーザー名 |
-| GitHub repo | リポジトリ名 |
-| Language | `ja` または `en`（Claude への指示言語） |
-| Max Engineers | 並列起動する Engineer の最大数（デフォルト: 4） |
+| GitHub owner | Org name or username |
+| GitHub repo | Repository name |
+| Language | `ja` or `en` (language for Claude instructions) |
+| Max Engineers | Maximum number of Engineers to spawn in parallel (default: 4) |
 
-生成されるファイル：
+Generated files:
 
-- `harness.toml` — プロジェクト設定（チームで共有）
-- `CLAUDE.md` — Superintendent / Engineer のロール定義
+- `harness.toml` — Project configuration (shared with the team)
+- `CLAUDE.md` — Role definitions for Superintendent / Engineer
 
-`CLAUDE.md` の「コーディング規約」セクションをプロジェクトに合わせて編集してください。
+Edit the "Coding Guidelines" section in `CLAUDE.md` to match your project.
 
 ---
 
-## 使い方
+## Usage
 
-`hermit install` で `~/.claude/settings.json` に MCP サーバーとして登録されるため、**Claude Code が起動時に `hermit serve` を自動起動**します。別ターミナルで手動起動する必要はありません。
+Since `hermit install` registers it as an MCP server in `~/.claude/settings.json`, **Claude Code automatically starts `hermit serve` on launch**. No need to start it manually in another terminal.
 
 ```
-Claude Code 起動
-  └─ hermit serve を自動起動（MCP サブプロセス）
+Claude Code starts
+  └─ hermit serve auto-started (MCP subprocess)
        ↓ list_issues / assign_issue / create_worktree
        ↓ Agent spawn → Engineer × N
        ↓ evaluate_risk / merge_pr / close_worktree
-       ↓ （繰り返し）
+       ↓ (repeat)
 ```
 
-### ステップ 1: プロジェクトで Claude Code を起動する
+### Step 1: Start Claude Code in your project
 
 ```sh
-cd your-project   # hermit init を実行したディレクトリ
+cd your-project   # directory where hermit init was run
 claude
 ```
 
-### ステップ 2: Superintendent ループを開始する
+### Step 2: Start the Superintendent loop
 
 ```
 /hermit
 ```
 
-これだけです。`/hermit` は内部で `/loop 270s` を呼び出し、270 秒ごとにコンテキストをリセットしながら Superintendent サイクルを継続します。Issue がなければ次のループまで待機し、あれば実装・マージまで自動処理します。
+That's it. `/hermit` internally calls `/loop 120s`, resetting context every 120 seconds while continuing the Superintendent cycle. If there are no Issues it waits for the next loop; if there are Issues it automatically handles everything through implementation and merge.
 
-### Superintendent のサイクル
+### Superintendent Cycle
 
-1. `list_issues` で未着手 Issue を取得
-2. `assign_issue` で処理中にマーク
-3. Agent ツールで Engineer を並列起動（最大 `max_engineers` 本）
-4. `evaluate_risk` でリスク判定
-5. LOW/MEDIUM なら `merge_pr` で自動マージ（HIGH はスキップしてコメント投稿）
-6. `close_worktree` でワークツリーを掃除
-7. 1 に戻る
-
----
-
-## MCP ツール一覧
-
-| ツール | 説明 |
-|---|---|
-| `list_issues` | 未着手の Issue 一覧を返す |
-| `assign_issue` | Issue をラベル付与・アサインして処理中にマーク |
-| `create_worktree` | `hermit/issue-{N}` ブランチと `/tmp/hermit-{N}` ワークツリーを作成 |
-| `evaluate_risk` | PR の変更量・影響範囲から LOW/MEDIUM/HIGH を判定 |
-| `merge_pr` | CI 通過確認後にマージ（HIGH リスクは拒否してコメント投稿） |
-| `close_worktree` | ワークツリーとブランチを削除 |
-
-### リスク判定基準
-
-| 条件 | レベル |
-|---|---|
-| 変更ファイル 20+ / 変更行 500+ / `cmd/` `go.mod` `.github/` に変更 | HIGH |
-| 変更ファイル 10+ / 変更行 200+ / `internal/` に変更 | MEDIUM |
-| 上記以外 | LOW |
+1. Retrieve open Issues with `list_issues`
+2. Mark as in-progress with `assign_issue`
+3. Spawn Engineers in parallel with the Agent tool (up to `max_engineers`)
+4. Risk evaluation with `evaluate_risk`
+5. If LOW/MEDIUM, auto-merge with `merge_pr` (skip HIGH with comment)
+6. Clean up worktrees with `close_worktree`
+7. Return to step 1
 
 ---
 
-## 設定ファイル (`harness.toml`)
+## MCP Tools
+
+| Tool | Description |
+|---|---|
+| `list_issues` | Returns a list of open Issues |
+| `assign_issue` | Marks an Issue as in-progress by adding a label and assigning |
+| `create_worktree` | Creates a `hermit/issue-{N}` branch and `/tmp/hermit-{N}` worktree |
+| `evaluate_risk` | Returns LOW/MEDIUM/HIGH based on PR change volume and impact area |
+| `merge_pr` | Merges after CI passes (rejects HIGH risk with a comment) |
+| `close_worktree` | Removes the worktree and branch |
+
+### Risk Evaluation Criteria
+
+| Condition | Level |
+|---|---|
+| 20+ changed files / 500+ changed lines / changes in `cmd/`, `go.mod`, `.github/` | HIGH |
+| 10+ changed files / 200+ changed lines / changes in `internal/` | MEDIUM |
+| Otherwise | LOW |
+
+---
+
+## Configuration File (`harness.toml`)
 
 ```toml
 [github]
@@ -128,39 +128,39 @@ owner = "your-org"
 repo  = "your-repo"
 
 [agent]
-max_engineers = 4   # 並列 Engineer の最大数
-language      = "ja"  # "ja" | "en"
+max_engineers = 4   # maximum number of parallel Engineers
+language      = "en"  # "ja" | "en"
 ```
 
-**`GITHUB_TOKEN` は環境変数で渡します。`harness.toml` には書かないでください。**
+**Pass `GITHUB_TOKEN` as an environment variable. Do not write it in `harness.toml`.**
 
 ---
 
-## 自動運転の一時停止・再開
+## Pausing and Resuming Autonomous Operation
 
 ```sh
-hermit pause    # 自動運転を一時停止（.hermit-paused を作成）
-hermit resume   # 自動運転を再開（.hermit-paused を削除）
-hermit status   # 現在の状態を確認（running / paused）
+hermit pause    # pause autonomous operation (creates .hermit-paused)
+hermit resume   # resume autonomous operation (removes .hermit-paused)
+hermit status   # check current state (running / paused)
 ```
 
-Superintendent は各サイクルの先頭で `.hermit-paused` の有無を確認します。`hermit pause` を実行すると現在のサイクルが完了した後に停止し、`hermit resume` で即座に再開します。
+The Superintendent checks for `.hermit-paused` at the start of each cycle. Running `hermit pause` stops it after the current cycle completes; `hermit resume` resumes it immediately.
 
 ---
 
-## サブコマンド一覧
+## Subcommand Reference
 
 ```
-hermit serve    # MCP サーバーを起動（stdio）※ Claude Code が自動起動するため通常は手動実行不要
-hermit install  # ~/.claude/settings.json に MCP サーバーを登録
-hermit init     # プロジェクトを初期化（harness.toml + CLAUDE.md 生成）
-hermit pause    # 自動運転を一時停止
-hermit resume   # 自動運転を再開
-hermit status   # 自動運転の状態を表示
+hermit serve    # Start the MCP server (stdio) — Claude Code auto-starts this, manual execution normally not needed
+hermit install  # Register MCP server in ~/.claude/settings.json
+hermit init     # Initialize a project (generate harness.toml + CLAUDE.md)
+hermit pause    # Pause autonomous operation
+hermit resume   # Resume autonomous operation
+hermit status   # Show autonomous operation status
 ```
 
 ---
 
-## ライセンス
+## License
 
 MIT

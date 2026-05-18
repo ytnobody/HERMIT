@@ -3,16 +3,58 @@ package github
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
 
 	gogithub "github.com/google/go-github/v62/github"
 	"golang.org/x/oauth2"
 )
 
+// issueRefRe matches common issue reference patterns in PR bodies/titles
+// e.g. "closes #31", "fixes #31", "#31"
+var issueRefRe = regexp.MustCompile(`(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)?\s*#(\d+)`)
+
+// GetGitHubLogin returns the authenticated GitHub username by calling
+// "gh api user --jq '.login'". If the gh CLI is unavailable or fails,
+// an empty string and a non-nil error are returned.
+func GetGitHubLogin() (string, error) {
+	out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api user: %w", err)
+	}
+	login := strings.TrimSpace(string(out))
+	if login == "" {
+		return "", fmt.Errorf("gh api user returned empty login")
+	}
+	return login, nil
+}
+
+// RepoConfig identifies a single GitHub repository and an optional label filter
+// used for multi-repo mode.
+type RepoConfig struct {
+	Owner string
+	Repo  string
+	Label string
+}
+
 type Issue struct {
-	Number int
-	Title  string
-	Body   string
-	Labels []string
+	Number int      `json:"Number"`
+	Title  string   `json:"Title"`
+	Body   string   `json:"Body"`
+	Labels []string `json:"Labels"`
+	// Owner and Repo are populated in multi-repo mode to identify the source repo.
+	Owner string `json:"Owner,omitempty"`
+	Repo  string `json:"Repo,omitempty"`
+}
+
+// PRInfo holds a summary of an open pull request returned by ListOpenPRs.
+type PRInfo struct {
+	PRNumber    int    `json:"pr_number"`
+	Title       string `json:"title"`
+	HeadBranch  string `json:"head_branch"`
+	IssueNumber int    `json:"issue_number,omitempty"` // 0 means not detected
 }
 
 type IssueComment struct {
@@ -52,14 +94,17 @@ func NewClient(token, owner, repo string) *Client {
 	}
 }
 
-func (c *Client) ListOpenIssues(label string) ([]Issue, error) {
+// listOpenIssuesFromRepo fetches open issues from a specific owner/repo pair,
+// optionally filtering by label. Each returned Issue has its Owner and Repo
+// fields set to the provided values.
+func (c *Client) listOpenIssuesFromRepo(owner, repo, label string) ([]Issue, error) {
 	opts := &gogithub.IssueListByRepoOptions{
 		State: "open",
 	}
 	if label != "" {
 		opts.Labels = []string{label}
 	}
-	issues, _, err := c.gh.Issues.ListByRepo(context.Background(), c.owner, c.repo, opts)
+	issues, _, err := c.gh.Issues.ListByRepo(context.Background(), owner, repo, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -77,26 +122,130 @@ func (c *Client) ListOpenIssues(label string) ([]Issue, error) {
 			Title:  i.GetTitle(),
 			Body:   i.GetBody(),
 			Labels: labels,
+			Owner:  owner,
+			Repo:   repo,
 		})
 	}
 	return result, nil
 }
 
+// ListOpenIssues returns open issues from the client's primary repository,
+// optionally filtered by label. Owner/Repo fields are NOT set in single-repo
+// mode to preserve backward compatibility.
+func (c *Client) ListOpenIssues(label string) ([]Issue, error) {
+	issues, err := c.listOpenIssuesFromRepo(c.owner, c.repo, label)
+	if err != nil {
+		return nil, err
+	}
+	// Clear Owner/Repo in single-repo mode for backward compat (callers don't expect them).
+	for i := range issues {
+		issues[i].Owner = ""
+		issues[i].Repo = ""
+	}
+	return issues, nil
+}
+
+// ListAllIssues fetches open issues from all provided repos. If repos is
+// empty, it falls back to the client's primary repo (same as ListOpenIssues
+// but with Owner/Repo fields populated). The label filter in each RepoConfig
+// is applied per-repo.
+func (c *Client) ListAllIssues(repos []RepoConfig) ([]Issue, error) {
+	if len(repos) == 0 {
+		// Fallback: single-repo mode with owner/repo fields set.
+		return c.listOpenIssuesFromRepo(c.owner, c.repo, "")
+	}
+	var all []Issue
+	for _, r := range repos {
+		issues, err := c.listOpenIssuesFromRepo(r.Owner, r.Repo, r.Label)
+		if err != nil {
+			return nil, fmt.Errorf("listing issues for %s/%s: %w", r.Owner, r.Repo, err)
+		}
+		all = append(all, issues...)
+	}
+	return all, nil
+}
+
+// extractIssueNumber parses the first issue reference from the given text
+// (e.g. "Closes #31" → 31). Returns 0 if none found.
+func extractIssueNumber(text string) int {
+	m := issueRefRe.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+// ListOpenPRs returns open pull requests. When issueNum > 0 only PRs
+// referencing that issue (detected via body/title) are returned.
+func (c *Client) ListOpenPRs(issueNum int) ([]PRInfo, error) {
+	prs, _, err := c.gh.PullRequests.List(context.Background(), c.owner, c.repo, &gogithub.PullRequestListOptions{
+		State: "open",
+	})
+	if err != nil {
+		return nil, err
+	}
+	var result []PRInfo
+	for _, pr := range prs {
+		detected := extractIssueNumber(pr.GetBody())
+		if detected == 0 {
+			detected = extractIssueNumber(pr.GetTitle())
+		}
+		if issueNum > 0 && detected != issueNum {
+			continue
+		}
+		result = append(result, PRInfo{
+			PRNumber:    pr.GetNumber(),
+			Title:       pr.GetTitle(),
+			HeadBranch:  pr.GetHead().GetRef(),
+			IssueNumber: detected,
+		})
+	}
+	return result, nil
+}
+
+// resolveRepo returns the owner/repo pair to use for an API call.
+// If the provided owner or repo strings are empty, the client's primary values
+// are used instead.
+func (c *Client) resolveRepo(owner, repo string) (string, string) {
+	if owner == "" {
+		owner = c.owner
+	}
+	if repo == "" {
+		repo = c.repo
+	}
+	return owner, repo
+}
+
 func (c *Client) AssignIssue(number int, assignee string) error {
-	_, _, err := c.gh.Issues.AddAssignees(context.Background(), c.owner, c.repo, number, []string{assignee})
+	return c.AssignIssueInRepo(number, assignee, "", "")
+}
+
+// AssignIssueInRepo assigns an issue in a specific repo. Pass empty strings to
+// use the client's primary owner/repo.
+func (c *Client) AssignIssueInRepo(number int, assignee, owner, repo string) error {
+	owner, repo = c.resolveRepo(owner, repo)
+	_, _, err := c.gh.Issues.AddAssignees(context.Background(), owner, repo, number, []string{assignee})
 	if err != nil {
 		return err
 	}
-	_, _, err = c.gh.Issues.AddLabelsToIssue(context.Background(), c.owner, c.repo, number, []string{"in-progress"})
+	_, _, err = c.gh.Issues.AddLabelsToIssue(context.Background(), owner, repo, number, []string{"in-progress"})
 	return err
 }
 
 func (c *Client) GetPRStatus(number int) (*PRStatus, error) {
-	pr, _, err := c.gh.PullRequests.Get(context.Background(), c.owner, c.repo, number)
+	return c.GetPRStatusInRepo(number, "", "")
+}
+
+// GetPRStatusInRepo returns the status of a PR in a specific repo. Pass empty
+// strings to use the client's primary owner/repo.
+func (c *Client) GetPRStatusInRepo(number int, owner, repo string) (*PRStatus, error) {
+	owner, repo = c.resolveRepo(owner, repo)
+	pr, _, err := c.gh.PullRequests.Get(context.Background(), owner, repo, number)
 	if err != nil {
 		return nil, err
 	}
-	files, _, err := c.gh.PullRequests.ListFiles(context.Background(), c.owner, c.repo, number, nil)
+	files, _, err := c.gh.PullRequests.ListFiles(context.Background(), owner, repo, number, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +258,7 @@ func (c *Client) GetPRStatus(number int) (*PRStatus, error) {
 		})
 	}
 
-	ciPassing, err := c.IsCIPassing(number, pr.GetHead().GetSHA())
+	ciPassing, err := c.IsCIPassingInRepo(number, pr.GetHead().GetSHA(), owner, repo)
 	if err != nil {
 		ciPassing = false
 	}
@@ -124,7 +273,14 @@ func (c *Client) GetPRStatus(number int) (*PRStatus, error) {
 }
 
 func (c *Client) IsCIPassing(prNumber int, sha string) (bool, error) {
-	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), c.owner, c.repo, sha, nil)
+	return c.IsCIPassingInRepo(prNumber, sha, "", "")
+}
+
+// IsCIPassingInRepo checks CI status for a specific repo. Pass empty strings
+// to use the client's primary owner/repo.
+func (c *Client) IsCIPassingInRepo(prNumber int, sha, owner, repo string) (bool, error) {
+	owner, repo = c.resolveRepo(owner, repo)
+	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
 	if err != nil {
 		return false, err
 	}
@@ -133,14 +289,28 @@ func (c *Client) IsCIPassing(prNumber int, sha string) (bool, error) {
 }
 
 func (c *Client) MergePR(number int) error {
+	return c.MergePRInRepo(number, "", "")
+}
+
+// MergePRInRepo merges a PR in a specific repo. Pass empty strings to use the
+// client's primary owner/repo.
+func (c *Client) MergePRInRepo(number int, owner, repo string) error {
+	owner, repo = c.resolveRepo(owner, repo)
 	opts := &gogithub.PullRequestOptions{MergeMethod: "squash"}
-	_, _, err := c.gh.PullRequests.Merge(context.Background(), c.owner, c.repo, number, "", opts)
+	_, _, err := c.gh.PullRequests.Merge(context.Background(), owner, repo, number, "", opts)
 	return err
 }
 
 func (c *Client) PostComment(number int, body string) error {
+	return c.PostCommentInRepo(number, body, "", "")
+}
+
+// PostCommentInRepo posts a comment on an issue/PR in a specific repo. Pass
+// empty strings to use the client's primary owner/repo.
+func (c *Client) PostCommentInRepo(number int, body, owner, repo string) error {
+	owner, repo = c.resolveRepo(owner, repo)
 	comment := &gogithub.IssueComment{Body: gogithub.String(body)}
-	_, _, err := c.gh.Issues.CreateComment(context.Background(), c.owner, c.repo, number, comment)
+	_, _, err := c.gh.Issues.CreateComment(context.Background(), owner, repo, number, comment)
 	return err
 }
 
@@ -175,5 +345,154 @@ func (c *Client) GetIssueComments(issueNumber int) ([]IssueComment, error) {
 	return result, nil
 }
 
+func (c *Client) CloseIssue(number int, comment string) error {
+	return c.CloseIssueInRepo(number, comment, "", "")
+}
+
+// CloseIssueInRepo closes an issue in a specific repo. Pass empty strings to
+// use the client's primary owner/repo.
+func (c *Client) CloseIssueInRepo(number int, comment, owner, repo string) error {
+	owner, repo = c.resolveRepo(owner, repo)
+	if comment != "" {
+		if err := c.PostCommentInRepo(number, comment, owner, repo); err != nil {
+			return err
+		}
+	}
+	state := "closed"
+	_, _, err := c.gh.Issues.Edit(context.Background(), owner, repo, number, &gogithub.IssueRequest{State: &state})
+	return err
+}
+
 func (c *Client) Owner() string { return c.owner }
 func (c *Client) Repo() string  { return c.repo }
+
+// ReviewPR fetches the PR files and generates a structured review comment.
+// It performs static analysis only — no AI/LLM calls.
+func (c *Client) ReviewPR(num int) (string, error) {
+	pr, _, err := c.gh.PullRequests.Get(context.Background(), c.owner, c.repo, num)
+	if err != nil {
+		return "", fmt.Errorf("get PR: %w", err)
+	}
+	files, _, err := c.gh.PullRequests.ListFiles(context.Background(), c.owner, c.repo, num, nil)
+	if err != nil {
+		return "", fmt.Errorf("list PR files: %w", err)
+	}
+
+	// Build PRFile slice for risk evaluation
+	var prFiles []PRFile
+	for _, f := range files {
+		prFiles = append(prFiles, PRFile{
+			Filename:  f.GetFilename(),
+			Additions: f.GetAdditions(),
+			Deletions: f.GetDeletions(),
+		})
+	}
+
+	additions := pr.GetAdditions()
+	deletions := pr.GetDeletions()
+
+	// Checklist checks
+	hasTests := false
+	hasDocs := false
+	for _, f := range files {
+		name := f.GetFilename()
+		if strings.HasSuffix(name, "_test.go") {
+			hasTests = true
+		}
+		if strings.HasPrefix(name, "docs/") || strings.HasSuffix(name, ".md") {
+			hasDocs = true
+		}
+	}
+
+	// Risk assessment
+	level, reasons := reviewEvaluate(prFiles, additions, deletions)
+
+	// Format comment
+	var sb strings.Builder
+	sb.WriteString("## HERMIT Automated PR Review\n\n")
+
+	// File change summary
+	sb.WriteString("### File Change Summary\n\n")
+	fmt.Fprintf(&sb, "- **Files changed**: %d\n", len(files))
+	fmt.Fprintf(&sb, "- **Lines added**: +%d\n", additions)
+	fmt.Fprintf(&sb, "- **Lines removed**: -%d\n", deletions)
+	sb.WriteString("\n")
+
+	// Risk assessment
+	sb.WriteString("### Risk Assessment\n\n")
+	fmt.Fprintf(&sb, "**Level**: %s\n", level)
+	if len(reasons) > 0 {
+		sb.WriteString("\nReasons:\n")
+		for _, r := range reasons {
+			fmt.Fprintf(&sb, "- %s\n", r)
+		}
+	}
+	sb.WriteString("\n")
+
+	// Checklist
+	sb.WriteString("### Checklist\n\n")
+	testMark := "[ ]"
+	if hasTests {
+		testMark = "[x]"
+	}
+	docMark := "[ ]"
+	if hasDocs {
+		docMark = "[x]"
+	}
+	// Breaking changes: heuristic — deletions >= 50 or high-risk path changes
+	breakingChanges := deletions >= 50 || level == "HIGH"
+	breakMark := "[ ]"
+	if breakingChanges {
+		breakMark = "[x]"
+	}
+	fmt.Fprintf(&sb, "- %s Tests present (`_test.go` files changed)\n", testMark)
+	fmt.Fprintf(&sb, "- %s Docs updated (`docs/` or `.md` files changed)\n", docMark)
+	fmt.Fprintf(&sb, "- %s Possible breaking changes (large deletions or HIGH risk path)\n", breakMark)
+
+	return sb.String(), nil
+}
+
+// reviewEvaluate is a local wrapper that returns Level as a plain string.
+// It mirrors risk.Evaluate logic but avoids an import cycle.
+// The actual risk.Evaluate is used in the MCP tool layer.
+func reviewEvaluate(files []PRFile, additions, deletions int) (string, []string) {
+	total := additions + deletions
+	var reasons []string
+
+	highPaths := []string{"cmd/", "go.mod", ".github/"}
+
+	if len(files) >= 20 {
+		reasons = append(reasons, "20 or more files changed")
+	}
+	if total >= 500 {
+		reasons = append(reasons, "500 or more lines changed")
+	}
+	for _, f := range files {
+		for _, p := range highPaths {
+			if strings.HasPrefix(f.Filename, p) || f.Filename == p {
+				reasons = append(reasons, f.Filename+" is in a high-risk path")
+			}
+		}
+	}
+	if len(reasons) > 0 {
+		return "HIGH", reasons
+	}
+
+	if len(files) >= 10 {
+		reasons = append(reasons, "10 or more files changed")
+	}
+	if total >= 200 {
+		reasons = append(reasons, "200 or more lines changed")
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.Filename, "internal/") {
+			reasons = append(reasons, f.Filename+" has changes in internal core")
+			break
+		}
+	}
+	if len(reasons) > 0 {
+		return "MEDIUM", reasons
+	}
+
+	return "LOW", nil
+}

@@ -1,7 +1,13 @@
 [github]
-owner = "ytnobody"
-repo  = "HERMIT"
+owner                = "ytnobody"
+repo                 = "HERMIT"
+rate_limit_threshold = 10
 
 [agent]
 max_engineers = 4
 language      = "ja"
+# loop_interval = 270  # Superintendent cycle interval in seconds (default: 270)
+
+[model]
+superintendent = "claude-sonnet-4-5"
+engineer       = "claude-sonnet-4-5"

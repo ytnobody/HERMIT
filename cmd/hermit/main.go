@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,9 @@ import (
 	"text/template"
 
 	"github.com/BurntSushi/toml"
+
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/git"
 	"github.com/ytnobody/hermit/internal/mcp"
 	"github.com/ytnobody/hermit/internal/permissions"
 )
@@ -21,15 +24,56 @@ import (
 //go:embed templates/*
 var templateFS embed.FS
 
+// RepoConfig holds the owner, repo, and optional label filter for a single
+// repository entry in the [[repos]] array.
+type RepoConfig struct {
+	Owner string `toml:"owner"`
+	Repo  string `toml:"repo"`
+	Label string `toml:"label"`
+}
+
 type Config struct {
 	GitHub struct {
-		Owner string `toml:"owner"`
-		Repo  string `toml:"repo"`
+		Owner              string `toml:"owner"`
+		Repo               string `toml:"repo"`
+		RateLimitThreshold int    `toml:"rate_limit_threshold"`
 	} `toml:"github"`
+	// Repos overrides the single [github] section when present.
+	Repos []RepoConfig `toml:"repos"`
 	Agent struct {
 		MaxEngineers int    `toml:"max_engineers"`
 		Language     string `toml:"language"`
+		BranchPrefix string `toml:"branch_prefix"`
+		LoopInterval int    `toml:"loop_interval"`
 	} `toml:"agent"`
+	Model struct {
+		Superintendent string `toml:"superintendent"`
+		Engineer       string `toml:"engineer"`
+	} `toml:"model"`
+	Notification struct {
+		WebhookURL string `toml:"webhook_url"`
+		Type       string `toml:"type"`
+	} `toml:"notification"`
+}
+
+// ModelPreset defines superintendent/engineer model combinations.
+type ModelPreset struct {
+	Superintendent string
+	Engineer       string
+	Description    string
+}
+
+var modelPresets = map[string]ModelPreset{
+	"claude": {
+		Superintendent: "claude-sonnet-4-5",
+		Engineer:       "claude-sonnet-4-5",
+		Description:    "Sonnet for both Superintendent and Engineer (balanced)",
+	},
+	"claude-cheap": {
+		Superintendent: "claude-sonnet-4-5",
+		Engineer:       "claude-haiku-4-5",
+		Description:    "Sonnet for Superintendent, Haiku for Engineers (cost-optimized)",
+	},
 }
 
 func main() {
@@ -50,6 +94,26 @@ func main() {
 		cmdResume()
 	case "status":
 		cmdStatus()
+	case "use":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: hermit use <preset>")
+			fmt.Fprintln(os.Stderr, "Available presets:")
+			for name, p := range modelPresets {
+				fmt.Fprintf(os.Stderr, "  %-20s %s\n", name, p.Description)
+			}
+			os.Exit(1)
+		}
+		cmdUse(os.Args[2])
+	case "version":
+		cmdVersion()
+	case "upgrade":
+		cmdUpgrade()
+	case "cleanup":
+		cmdCleanup()
+	case "doctor":
+		cmdDoctor()
+	case "dry-run":
+		cmdDryRun()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		usage()
@@ -58,7 +122,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status>")
+	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status|use|version|upgrade|cleanup|doctor|dry-run>")
 }
 
 const pauseFile = ".hermit-paused"
@@ -69,18 +133,18 @@ func cmdPause() {
 		fatal(err.Error())
 	}
 	f.Close()
-	fmt.Println("⏸  自動運転を一時停止しました。再開するには: hermit resume")
+	fmt.Println("⏸  Autonomous operation paused. To resume: hermit resume")
 }
 
 func cmdResume() {
 	if err := os.Remove(pauseFile); err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("自動運転はすでに動作中です。")
+			fmt.Println("Autonomous operation is already running.")
 			return
 		}
 		fatal(err.Error())
 	}
-	fmt.Println("▶  自動運転を再開しました。")
+	fmt.Println("▶  Autonomous operation resumed.")
 }
 
 func cmdStatus() {
@@ -91,45 +155,163 @@ func cmdStatus() {
 	}
 }
 
+func cmdUse(presetName string) {
+	preset, ok := modelPresets[presetName]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset %q\n", presetName)
+		fmt.Fprintln(os.Stderr, "Available presets:")
+		for name, p := range modelPresets {
+			fmt.Fprintf(os.Stderr, "  %-20s %s\n", name, p.Description)
+		}
+		os.Exit(1)
+	}
+
+	const harnessFile = "harness.toml"
+	data, err := os.ReadFile(harnessFile)
+	if err != nil {
+		fatal("failed to read harness.toml: " + err.Error())
+	}
+
+	var cfg map[string]any
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		fatal("failed to parse harness.toml: " + err.Error())
+	}
+
+	modelSection, _ := cfg["model"].(map[string]any)
+	if modelSection == nil {
+		modelSection = make(map[string]any)
+	}
+	modelSection["superintendent"] = preset.Superintendent
+	modelSection["engineer"] = preset.Engineer
+	cfg["model"] = modelSection
+
+	f, err := os.Create(harnessFile)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer f.Close()
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		fatal("failed to write harness.toml: " + err.Error())
+	}
+
+	fmt.Printf("✓ preset %q applied\n", presetName)
+	fmt.Printf("  superintendent: %s\n", preset.Superintendent)
+	fmt.Printf("  engineer:       %s\n", preset.Engineer)
+}
+
 func githubToken() string {
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
 		return token
 	}
 	out, err := exec.Command("gh", "auth", "token").Output()
 	if err != nil {
-		fatal("GITHUB_TOKEN が未設定で、gh auth token の実行にも失敗しました。\n" +
-			"  - 環境変数 GITHUB_TOKEN を設定するか\n" +
-			"  - gh auth login で認証してください")
+		fmt.Fprintln(os.Stderr, "warn: GITHUB_TOKEN is not set and gh auth token also failed. GitHub API calls will result in authentication errors.")
+		return ""
 	}
 	return strings.TrimSpace(string(out))
 }
 
+// resolveBranchPrefix determines the branch prefix to use for worktrees.
+// Priority:
+//  1. cfg.Agent.BranchPrefix if set in harness.toml
+//  2. "hermit/<gh_login>" if gh CLI is available
+//  3. "hermit" as fallback (legacy format)
+func resolveBranchPrefix(cfg Config) string {
+	if cfg.Agent.BranchPrefix != "" {
+		return cfg.Agent.BranchPrefix
+	}
+	login, err := gh.GetGitHubLogin()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warn: could not retrieve GitHub login name. Using fallback branch prefix \"hermit\":", err)
+		return "hermit"
+	}
+	return "hermit/" + login
+}
+
 func cmdServe() {
+	// Claude Code may not honour the cwd setting when spawning the MCP server.
+	// Resolve the binary's real location and chdir there so harness.toml is
+	// always reachable via a relative path regardless of the OS working dir.
+	if execPath, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+			execPath = resolved
+		}
+		_ = os.Chdir(filepath.Dir(execPath))
+	}
+
+	rootDir, _ := os.Getwd()
+
+	// Detect legacy resources and warn before starting the MCP server.
+	if branches := git.DetectLegacyBranches(); len(branches) > 0 {
+		log.Printf("WARNING: %d legacy branch(es) detected: %v", len(branches), branches)
+		log.Printf("         Run `hermit cleanup` to remove them.")
+	}
+	if zombies := git.DetectZombieWorktrees(); len(zombies) > 0 {
+		log.Printf("WARNING: %d zombie worktree(s) detected: %v", len(zombies), zombies)
+		log.Printf("         Run `hermit cleanup` to remove them.")
+	}
+
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
-	if err := mcp.Serve(client); err != nil {
+	prefix := resolveBranchPrefix(cfg)
+
+	// Convert []RepoConfig → []gh.RepoConfig for the MCP layer.
+	var repos []gh.RepoConfig
+	for _, r := range cfg.Repos {
+		repos = append(repos, gh.RepoConfig{Owner: r.Owner, Repo: r.Repo, Label: r.Label})
+	}
+
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos); err != nil {
 		fatal(err.Error())
 	}
 }
 
-func cmdInstall() {
-	execPath, err := os.Executable()
-	if err != nil {
-		fatal("failed to resolve hermit binary path: " + err.Error())
+func cmdCleanup() {
+	fmt.Println("=== HERMIT Cleanup ===")
+
+	branches := git.DetectLegacyBranches()
+	if len(branches) == 0 {
+		fmt.Println("Legacy branches: none")
+	} else {
+		fmt.Printf("Removing legacy branches: %v\n", branches)
+		if err := git.CleanupLegacyBranches(branches); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		} else {
+			fmt.Printf("  Removed %d legacy branch(es).\n", len(branches))
+		}
 	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		fatal("failed to resolve symlink for hermit binary: " + err.Error())
+
+	zombies := git.DetectZombieWorktrees()
+	if len(zombies) == 0 {
+		fmt.Println("Zombie worktrees: none")
+	} else {
+		fmt.Printf("Removing zombie worktrees: %v\n", zombies)
+		cleaned := 0
+		for _, path := range zombies {
+			out, err := exec.Command("git", "worktree", "remove", "--force", path).CombinedOutput()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  warning: failed to remove worktree %s: %s\n", path, strings.TrimSpace(string(out)))
+			} else {
+				cleaned++
+			}
+		}
+		fmt.Printf("  Removed %d zombie worktree(s).\n", cleaned)
+	}
+
+	fmt.Println("Cleanup complete.")
+}
+
+func cmdInstall() {
+	execPath, _ := os.Executable()
+	if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+		execPath = resolved
 	}
 
 	// cwd is where harness.toml lives, not the binary's directory.
-	cwd, err := os.Getwd()
-	if err != nil {
-		fatal("failed to get working directory: " + err.Error())
-	}
+	cwd, _ := os.Getwd()
 	if _, err := os.Stat("harness.toml"); os.IsNotExist(err) {
-		fatal("harness.toml が見つかりません。プロジェクトルートで `hermit install` を実行してください。")
+		fatal("harness.toml not found. Please run `hermit install` from the project root.")
 	}
 
 	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
@@ -162,10 +344,7 @@ func cmdInstall() {
 	}
 	settings["mcpServers"] = mcpServers
 
-	b, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		fatal(err.Error())
-	}
+	b, _ := json.MarshalIndent(settings, "", "  ") // map[string]any is always serialisable
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
 		fatal(err.Error())
 	}
@@ -191,7 +370,7 @@ func cmdInstall() {
 	}
 
 	fmt.Println("")
-	fmt.Println("⚠  Claude Code を再起動すると MCP ツールが有効になります。")
+	fmt.Println("⚠  Restart Claude Code to enable the MCP tools.")
 }
 
 func cmdInit() {
@@ -206,19 +385,44 @@ func cmdInit() {
 		maxEng = 4
 	}
 
-	type tmplData struct {
-		Owner        string
-		Repo         string
-		Language     string
-		MaxEngineers int
+	fmt.Println("Available model presets:")
+	for name, p := range modelPresets {
+		fmt.Printf("  %-20s %s\n", name, p.Description)
 	}
-	data := tmplData{Owner: owner, Repo: repo, Language: lang, MaxEngineers: maxEng}
+	presetName := promptDefault(sc, "Model preset (default: claude): ", "claude")
+	preset, ok := modelPresets[presetName]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown preset %q, using 'claude'\n", presetName)
+		preset = modelPresets["claude"]
+	}
+
+	type tmplData struct {
+		Owner               string
+		Repo                string
+		Language            string
+		MaxEngineers        int
+		SuperintendentModel string
+		EngineerModel       string
+	}
+	data := tmplData{
+		Owner:               owner,
+		Repo:                repo,
+		Language:            lang,
+		MaxEngineers:        maxEng,
+		SuperintendentModel: preset.Superintendent,
+		EngineerModel:       preset.Engineer,
+	}
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
 	writeTemplate("templates/CLAUDE.md.tmpl", "CLAUDE.md", struct {
 		MaxEngineers       int
 		ProjectCodingRules string
-	}{MaxEngineers: maxEng, ProjectCodingRules: "プロジェクト固有のコーディング規約をここに記述してください。"})
+	}{MaxEngineers: maxEng, ProjectCodingRules: "Describe your project-specific coding guidelines here."})
+
+	// Generate .github/ISSUE_TEMPLATE/hermit-task.md for Issue creation guidance.
+	if err := writeIssueTemplate(); err != nil {
+		fatal("failed to write .github/ISSUE_TEMPLATE/hermit-task.md: " + err.Error())
+	}
 
 	// Generate .claude/settings.json so Claude Code runs autonomously without
 	// confirmation prompts during the hermit loop.
@@ -226,11 +430,12 @@ func cmdInit() {
 		fatal("failed to write .claude/settings.json: " + err.Error())
 	}
 
-	fmt.Println("\n✓ harness.toml と CLAUDE.md を生成しました。")
-	fmt.Println("✓ .claude/settings.json を生成しました（自律実行モード）。")
-	fmt.Println("次のステップ:")
-	fmt.Println("  1. CLAUDE.md の「コーディング規約」セクションを編集する")
-	fmt.Println("  2. GITHUB_TOKEN を設定して `hermit serve` を起動する")
+	fmt.Println("\n✓ harness.toml and CLAUDE.md generated.")
+	fmt.Println("✓ .github/ISSUE_TEMPLATE/hermit-task.md generated.")
+	fmt.Println("✓ .claude/settings.json generated (autonomous operation mode).")
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Edit the 'Coding Guidelines' section in CLAUDE.md")
+	fmt.Println("  2. Set GITHUB_TOKEN and start `hermit serve`")
 }
 
 // writeClaudeSettings creates .claude/settings.json in the current directory
@@ -242,12 +447,26 @@ func writeClaudeSettings() error {
 	return os.WriteFile(filepath.Join(".claude", "settings.json"), permissions.DefaultSettingsJSON(), 0o644)
 }
 
+// writeIssueTemplate creates .github/ISSUE_TEMPLATE/hermit-task.md in the
+// current directory so users can create well-structured Issues for HERMIT.
+func writeIssueTemplate() error {
+	dir := filepath.Join(".github", "ISSUE_TEMPLATE")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	content, err := templateFS.ReadFile("templates/hermit-task.md.tmpl")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "hermit-task.md"), content, 0o644)
+}
+
 func writeTemplate(tmplPath, outPath string, data any) {
 	content, err := templateFS.ReadFile(tmplPath)
 	if err != nil {
 		fatal("template not found: " + tmplPath + ": " + err.Error())
 	}
-	t, err := template.New("").Parse(string(content))
+	t, err := template.New("").Option("missingkey=error").Parse(string(content))
 	if err != nil {
 		fatal("template parse error: " + err.Error())
 	}
@@ -265,9 +484,12 @@ func loadConfig() Config {
 	var cfg Config
 	if _, err := toml.DecodeFile("harness.toml", &cfg); err != nil {
 		if os.IsNotExist(err) {
-			fatal("harness.toml が見つかりません。プロジェクトルートで `hermit init` を実行してください。")
+			fatal("harness.toml not found. Please run `hermit init` from the project root.")
 		}
 		fatal("failed to load harness.toml: " + err.Error())
+	}
+	if cfg.Agent.LoopInterval <= 0 {
+		cfg.Agent.LoopInterval = 270
 	}
 	return cfg
 }
@@ -286,7 +508,13 @@ func promptDefault(sc *bufio.Scanner, msg, def string) string {
 	return v
 }
 
-func fatal(msg string) {
+// fatalFunc is the function invoked by fatal(). Tests may replace it so that
+// error paths can be exercised in-process without calling os.Exit.
+var fatalFunc = func(msg string) {
 	fmt.Fprintln(os.Stderr, "error:", msg)
 	os.Exit(1)
+}
+
+func fatal(msg string) {
+	fatalFunc(msg)
 }
