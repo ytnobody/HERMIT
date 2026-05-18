@@ -52,7 +52,7 @@ jobs:
 
       - name: Install hermit
         run: |
-          curl -fsSL https://raw.githubusercontent.com/ytnobody/HERMIT/main/install.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/ytnobody/HERMIT/develop/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Register hermit MCP server

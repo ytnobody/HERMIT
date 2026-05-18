@@ -21,7 +21,7 @@ Automatically picks up GitHub Issues, spawns Agents in parallel, and autonomousl
 ## Installation
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/ytnobody/hermit/main/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/ytnobody/HERMIT/develop/install.sh | sh
 ```
 
 Places the binary at `~/.local/bin/hermit` and automatically registers it as a Claude Code MCP server.
