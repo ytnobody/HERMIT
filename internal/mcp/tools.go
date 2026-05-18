@@ -395,4 +395,31 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
+
+	s.AddTool(
+		mcp.NewTool("get_recent_pr_comments",
+			mcp.WithDescription("Returns inline review comments on a pull request, optionally filtered by a timestamp. Use this during the Superintendent loop to detect new PR review activity since the last check."),
+			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
+			mcp.WithString("since", mcp.Description("RFC3339 timestamp; only comments updated at or after this time are returned (optional)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			num, err := req.RequireInt("pr_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			since := req.GetString("since", "")
+			comments, err := client.GetRecentPRComments(num, since)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(map[string]any{"pr_number": num, "comments": comments, "count": len(comments)})
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
 }
