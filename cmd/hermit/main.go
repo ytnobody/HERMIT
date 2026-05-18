@@ -21,7 +21,7 @@ import (
 	"github.com/ytnobody/hermit/internal/permissions"
 )
 
-//go:embed templates/*
+//go:embed templates/* templates/commands/*
 var templateFS embed.FS
 
 // RepoConfig holds the owner, repo, and optional label filter for a single
@@ -356,6 +356,32 @@ func cmdInstall() {
 		fatal(err.Error())
 	}
 	fmt.Println("✓ HERMIT MCP server registered in", settingsPath)
+
+	// Install slash commands into the project's .claude/commands/ directory.
+	commandsDir := filepath.Join(cwd, ".claude", "commands")
+	if err := os.MkdirAll(commandsDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not create %s: %v\n", commandsDir, err)
+	} else {
+		cmdFiles := []string{"hermit.md", "hermit-pause.md", "hermit-resume.md"}
+		allOK := true
+		for _, name := range cmdFiles {
+			src := "templates/commands/" + name
+			data, err := templateFS.ReadFile(src)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warn: could not read embedded %s: %v\n", src, err)
+				allOK = false
+				continue
+			}
+			dst := filepath.Join(commandsDir, name)
+			if err := os.WriteFile(dst, data, 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "warn: could not write %s: %v\n", dst, err)
+				allOK = false
+			}
+		}
+		if allOK {
+			fmt.Println("✓ Slash commands installed to", commandsDir)
+		}
+	}
 
 	// Symlink binary to ~/.local/bin so `hermit` is available in PATH.
 	localBin := filepath.Join(os.Getenv("HOME"), ".local", "bin")
