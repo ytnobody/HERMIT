@@ -495,6 +495,137 @@ func TestPostCommentInRepo_OverrideRepo(t *testing.T) {
 	}
 }
 
+// --- IsCIPassingInRepo ---
+
+func TestIsCIPassingInRepo_Success(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/sha1/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"state": "success", "total_count": 3})
+	})
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	passing, err := client.IsCIPassingInRepo(1, "sha1", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !passing {
+		t.Error("expected IsCIPassing=true for state=success")
+	}
+}
+
+func TestIsCIPassingInRepo_Pending(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/sha2/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"state": "pending", "total_count": 2})
+	})
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	passing, err := client.IsCIPassingInRepo(1, "sha2", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if passing {
+		t.Error("expected IsCIPassing=false for state=pending with checks present")
+	}
+}
+
+func TestIsCIPassingInRepo_Failure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/sha3/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"state": "failure", "total_count": 1})
+	})
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	passing, err := client.IsCIPassingInRepo(1, "sha3", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if passing {
+		t.Error("expected IsCIPassing=false for state=failure")
+	}
+}
+
+// TestIsCIPassingInRepo_NoCIConfigured verifies the fix for the bug where
+// GitHub returns state="pending" with total_count=0 for repos without any CI
+// checks configured. Such repos should be treated as passing.
+func TestIsCIPassingInRepo_NoCIConfigured(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/sha4/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// GitHub default: pending with zero checks when no CI is configured.
+		json.NewEncoder(w).Encode(map[string]any{"state": "pending", "total_count": 0})
+	})
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	passing, err := client.IsCIPassingInRepo(1, "sha4", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !passing {
+		t.Error("expected IsCIPassing=true when total_count=0 (no CI configured)")
+	}
+}
+
+func TestIsCIPassingInRepo_EmptyState(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/sha5/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"state": "", "total_count": 0})
+	})
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	passing, err := client.IsCIPassingInRepo(1, "sha5", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !passing {
+		t.Error("expected IsCIPassing=true for empty state with total_count=0")
+	}
+}
+
+func TestIsCIPassingInRepo_APIError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/sha6/status", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	})
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	passing, err := client.IsCIPassingInRepo(1, "sha6", "", "")
+	if err == nil {
+		t.Fatal("expected error from API failure, got nil")
+	}
+	if passing {
+		t.Error("expected IsCIPassing=false on API error")
+	}
+}
+
+func TestIsCIPassingInRepo_OverrideRepo(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/other-org/other-repo/commits/sha7/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"state": "success", "total_count": 1})
+	})
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	passing, err := client.IsCIPassingInRepo(1, "sha7", "other-org", "other-repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !passing {
+		t.Error("expected IsCIPassing=true for success in overridden repo")
+	}
+}
+
 // --- CloseIssueInRepo ---
 
 func TestCloseIssueInRepo_OverrideRepo(t *testing.T) {

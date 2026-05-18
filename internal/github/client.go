@@ -271,11 +271,22 @@ func (c *Client) IsCIPassing(prNumber int, sha string) (bool, error) {
 
 // IsCIPassingInRepo checks CI status for a specific repo. Pass empty strings
 // to use the client's primary owner/repo.
+//
+// Returns true when:
+//   - state == "success" (all checks passed)
+//   - state == "" (no state set)
+//   - total_count == 0 (no CI checks configured; treat as passing so repos
+//     without CI are not permanently blocked from auto-merge)
 func (c *Client) IsCIPassingInRepo(prNumber int, sha, owner, repo string) (bool, error) {
 	owner, repo = c.resolveRepo(owner, repo)
 	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
 	if err != nil {
 		return false, err
+	}
+	// No checks configured — GitHub returns state "pending" with total_count 0.
+	// Treat this as passing so repos without CI are not blocked from auto-merge.
+	if status.GetTotalCount() == 0 {
+		return true, nil
 	}
 	state := status.GetState()
 	return state == "success" || state == "", nil
