@@ -145,7 +145,8 @@ func TestGetIssueComments_success(t *testing.T) {
 	if len(gotComments) != 2 {
 		t.Errorf("expected 2 comments, got %d", len(gotComments))
 	}
-	if got["count"].(float64) != 2 {
+	count, ok3 := got["count"].(float64)
+	if !ok3 || count != 2 {
 		t.Errorf("expected count 2, got %v", got["count"])
 	}
 }
@@ -167,7 +168,8 @@ func TestGetIssueComments_empty(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if got["count"].(float64) != 0 {
+	count, ok3 := got["count"].(float64)
+	if !ok3 || count != 0 {
 		t.Errorf("expected count 0, got %v", got["count"])
 	}
 }
@@ -210,7 +212,8 @@ func TestGetPRComments_success(t *testing.T) {
 	if len(comments) != 2 {
 		t.Errorf("expected 2 comments, got %d", len(comments))
 	}
-	if got["count"].(float64) != 2 {
+	count2, ok4 := got["count"].(float64)
+	if !ok4 || count2 != 2 {
 		t.Errorf("expected count 2, got %v", got["count"])
 	}
 }
@@ -232,7 +235,8 @@ func TestGetPRComments_empty(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if got["count"].(float64) != 0 {
+	count3, ok5 := got["count"].(float64)
+	if !ok5 || count3 != 0 {
 		t.Errorf("expected count 0, got %v", got["count"])
 	}
 }
