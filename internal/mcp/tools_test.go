@@ -12,14 +12,16 @@ import (
 )
 
 type mockGithubClient struct {
-	issues      []gh.Issue
-	issuesErr   error
-	comments    []gh.IssueComment
-	commentsErr error
-	assignErr   error
-	prStatus    *gh.PRStatus
-	prStatusErr error
-	mergePRErr  error
+	issues        []gh.Issue
+	issuesErr     error
+	comments      []gh.IssueComment
+	commentsErr   error
+	prComments    []gh.PRComment
+	prCommentsErr error
+	assignErr     error
+	prStatus      *gh.PRStatus
+	prStatusErr   error
+	mergePRErr    error
 }
 
 func (m *mockGithubClient) CheckRateLimit(_ int) error { return nil }
@@ -78,6 +80,10 @@ func (m *mockGithubClient) ReviewPR(_ int) (string, error) {
 
 func (m *mockGithubClient) GetIssueComments(_ int) ([]gh.IssueComment, error) {
 	return m.comments, m.commentsErr
+}
+
+func (m *mockGithubClient) GetPRComments(_ int) ([]gh.PRComment, error) {
+	return m.prComments, m.prCommentsErr
 }
 
 func newTestServer(t *testing.T, client githubClient) *server.MCPServer {
@@ -158,6 +164,70 @@ func TestGetIssueComments_apiError(t *testing.T) {
 	s := newTestServer(t, &mockGithubClient{commentsErr: errors.New("api failure")})
 
 	result := callTool(t, s, "get_issue_comments", map[string]any{"issue_number": float64(1)})
+
+	if !result.IsError {
+		t.Fatal("expected error result")
+	}
+}
+
+func TestGetPRComments_success(t *testing.T) {
+	prComments := []gh.PRComment{
+		{ID: 10, Author: "carol", Body: "looks good", Path: "main.go", CreatedAt: "2024-03-01T00:00:00Z", UpdatedAt: "2024-03-01T01:00:00Z"},
+		{ID: 11, Author: "dave", Body: "nit: typo", Path: "README.md", CreatedAt: "2024-03-02T00:00:00Z", UpdatedAt: "2024-03-02T00:00:00Z"},
+	}
+	s := newTestServer(t, &mockGithubClient{prComments: prComments})
+
+	result := callTool(t, s, "get_pr_comments", map[string]any{"pr_number": float64(99)})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc3, ok3 := result.Content[0].(mcp.TextContent)
+	if !ok3 {
+		t.Fatalf("expected TextContent")
+	}
+	text := tc3.Text
+	var got []gh.PRComment
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 comments, got %d", len(got))
+	}
+	if got[0].Author != "carol" || got[1].Author != "dave" {
+		t.Errorf("unexpected authors: %+v", got)
+	}
+	if got[0].Path != "main.go" {
+		t.Errorf("expected path main.go, got %s", got[0].Path)
+	}
+}
+
+func TestGetPRComments_empty(t *testing.T) {
+	s := newTestServer(t, &mockGithubClient{prComments: []gh.PRComment{}})
+
+	result := callTool(t, s, "get_pr_comments", map[string]any{"pr_number": float64(1)})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error")
+	}
+	tc4, ok4 := result.Content[0].(mcp.TextContent)
+	if !ok4 {
+		t.Fatalf("expected TextContent")
+	}
+	text := tc4.Text
+	var got []gh.PRComment
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 comments, got %d", len(got))
+	}
+}
+
+func TestGetPRComments_apiError(t *testing.T) {
+	s := newTestServer(t, &mockGithubClient{prCommentsErr: errors.New("github api down")})
+
+	result := callTool(t, s, "get_pr_comments", map[string]any{"pr_number": float64(1)})
 
 	if !result.IsError {
 		t.Fatal("expected error result")

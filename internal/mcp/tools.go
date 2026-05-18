@@ -31,6 +31,7 @@ type githubClient interface {
 	ListOpenPRs(issueNum int) ([]gh.PRInfo, error)
 	ReviewPR(num int) (string, error)
 	GetIssueComments(issueNumber int) ([]gh.IssueComment, error)
+	GetPRComments(prNumber int) ([]gh.PRComment, error)
 }
 
 func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
@@ -354,6 +355,28 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			b, _ := json.Marshal(map[string]any{"sent": webhookURL != "", "event": event})
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_pr_comments",
+			mcp.WithDescription("Returns inline review comments on a pull request. Use this during the loop to check if a PR has received new review feedback."),
+			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			num, err := req.RequireInt("pr_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			comments, err := client.GetPRComments(num)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(comments)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
