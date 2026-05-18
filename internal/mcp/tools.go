@@ -296,6 +296,45 @@ func registerTools(s *server.MCPServer, client *gh.Client, rateLimitThreshold in
 	)
 
 	s.AddTool(
+		mcp.NewTool("check_ci_status",
+			mcp.WithDescription("Checks the CI/CD status for a PR. Returns the overall state, per-check results, and a list of failing checks to aid investigation."),
+			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
+			mcp.WithString("owner", mcp.Description("Repository owner (optional, defaults to primary repo)")),
+			mcp.WithString("repo", mcp.Description("Repository name (optional, defaults to primary repo)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := client.CheckRateLimit(rateLimitThreshold); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			num, err := req.RequireInt("pr_number")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			owner := req.GetString("owner", "")
+			repo := req.GetString("repo", "")
+			details, err := client.GetCIDetailsInRepo(num, owner, repo)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			// If CI is failing, post an investigation comment on the PR.
+			if !details.Passing && len(details.FailedOnly) > 0 {
+				var failNames []string
+				for _, f := range details.FailedOnly {
+					failNames = append(failNames, f.Name)
+				}
+				msg := fmt.Sprintf("⚠️ HERMIT: CI/CD failure detected on PR #%d (SHA: %s).\nFailing checks: %s\nPlease investigate and fix before merging.",
+					num, details.SHA, strings.Join(failNames, ", "))
+				_ = client.PostCommentInRepo(num, msg, owner, repo)
+			}
+			b, err := json.Marshal(details)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
 		mcp.NewTool("notify",
 			mcp.WithDescription("Sends a notification to the configured webhook (Slack, Discord, or generic). Silently no-ops if no webhook_url is configured."),
 			mcp.WithString("event", mcp.Description("Event name (e.g. issue_assigned, pr_merged, high_risk_detected)"), mcp.Required()),

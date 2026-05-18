@@ -281,6 +281,78 @@ func (c *Client) IsCIPassingInRepo(prNumber int, sha, owner, repo string) (bool,
 	return state == "success" || state == "", nil
 }
 
+// CICheckResult holds information about a single CI check.
+type CICheckResult struct {
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	Description string `json:"description"`
+	TargetURL   string `json:"target_url,omitempty"`
+}
+
+// CIDetails holds detailed CI/CD status for a PR.
+type CIDetails struct {
+	PRNumber   int             `json:"pr_number"`
+	SHA        string          `json:"sha"`
+	State      string          `json:"state"`
+	Passing    bool            `json:"passing"`
+	TotalCount int             `json:"total_count"`
+	Checks     []CICheckResult `json:"checks"`
+	FailedOnly []CICheckResult `json:"failed_only"`
+}
+
+// GetCIDetails returns detailed CI/CD status for a given PR including
+// per-check results and a list of failing checks.
+func (c *Client) GetCIDetails(prNumber int) (*CIDetails, error) {
+	return c.GetCIDetailsInRepo(prNumber, "", "")
+}
+
+// GetCIDetailsInRepo returns detailed CI/CD status for a PR in a specific
+// repo. Pass empty strings to use the client's primary owner/repo.
+func (c *Client) GetCIDetailsInRepo(prNumber int, owner, repo string) (*CIDetails, error) {
+	owner, repo = c.resolveRepo(owner, repo)
+
+	pr, _, err := c.gh.PullRequests.Get(context.Background(), owner, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("get PR: %w", err)
+	}
+	sha := pr.GetHead().GetSHA()
+
+	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get combined status: %w", err)
+	}
+
+	state := status.GetState()
+	passing := state == "success" || state == ""
+
+	var checks []CICheckResult
+	for _, s := range status.Statuses {
+		checks = append(checks, CICheckResult{
+			Name:        s.GetContext(),
+			State:       s.GetState(),
+			Description: s.GetDescription(),
+			TargetURL:   s.GetTargetURL(),
+		})
+	}
+
+	var failed []CICheckResult
+	for _, ch := range checks {
+		if ch.State == "failure" || ch.State == "error" {
+			failed = append(failed, ch)
+		}
+	}
+
+	return &CIDetails{
+		PRNumber:   prNumber,
+		SHA:        sha,
+		State:      state,
+		Passing:    passing,
+		TotalCount: len(checks),
+		Checks:     checks,
+		FailedOnly: failed,
+	}, nil
+}
+
 func (c *Client) MergePR(number int) error {
 	return c.MergePRInRepo(number, "", "")
 }
