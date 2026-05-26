@@ -6,6 +6,8 @@ A simple multi-agent development automation harness leveraging Claude Code's nat
 
 Automatically picks up GitHub Issues, spawns Agents in parallel, and autonomously handles implementation, PR creation, and merging.
 
+**The software is provided "as is", without warranty of any kind.**
+
 ---
 
 ## Design Philosophy
