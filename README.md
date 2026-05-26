@@ -36,6 +36,34 @@ Places the binary at `~/.local/bin/hermit` and automatically registers it as a C
 
 ---
 
+## Quick Start
+
+```sh
+# 1. Install HERMIT (downloads the binary and auto-registers it as a Claude Code MCP server)
+curl -sSL https://raw.githubusercontent.com/ytnobody/HERMIT/refs/heads/main/install.sh | sh
+
+# 2. Initialize your project
+cd your-project
+hermit init
+
+# 3. Start Claude Code and launch the Superintendent loop
+claude
+# Inside Claude Code:
+# /hermit
+
+# 4. Create a GitHub Issue — HERMIT picks it up automatically and handles everything
+```
+
+Once `/hermit` is running, just open GitHub Issues in your repository. HERMIT will automatically:
+- Pick up the Issue
+- Spawn an Engineer agent to implement it
+- Create a Pull Request
+- Evaluate risk and merge if safe
+
+> **Note:** `install.sh` calls `hermit install` automatically, so the MCP server registration happens as part of the one-liner install command.
+
+---
+
 ## Setting Up a Project
 
 ```sh
@@ -83,11 +111,27 @@ claude
 
 ### Step 2: Start the Superintendent loop
 
+> **This step is required.** Autonomous development does not begin until you run `/hermit` inside Claude Code.
+
 ```
 /hermit
 ```
 
-That's it. `/hermit` internally calls `/loop 120s`, resetting context every 120 seconds while continuing the Superintendent cycle. If there are no Issues it waits for the next loop; if there are Issues it automatically handles everything through implementation and merge.
+`/hermit` internally calls `/loop 120s`, resetting context every 120 seconds while continuing the Superintendent cycle. If there are no Issues it waits for the next loop; if there are Issues it automatically handles everything through implementation and merge.
+
+### Step 3: Create a GitHub Issue to trigger automatic development
+
+With `/hermit` running, simply open an Issue in your GitHub repository:
+
+```
+GitHub Issue created
+  └─ HERMIT picks it up on the next cycle
+       └─ Engineer agent spawned automatically
+            └─ Implementation committed → PR created
+                 └─ Risk evaluated → auto-merged (if LOW/MEDIUM)
+```
+
+No further action is needed. HERMIT handles the entire development workflow autonomously.
 
 ### Superintendent Cycle
 
