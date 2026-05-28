@@ -174,11 +174,18 @@ owner = "your-org"
 repo  = "your-repo"
 
 [agent]
-max_engineers = 4   # maximum number of parallel Engineers
-language      = "en"  # "ja" | "en"
+max_engineers   = 4         # maximum number of parallel Engineers
+language        = "en"      # "ja" | "en"
+# trigger_comment = "/hermit"  # Only process Issues that have a comment containing this string
 ```
 
 **Pass `GITHUB_TOKEN` as an environment variable. Do not write it in `harness.toml`.**
+
+### Trigger Comment Mode
+
+When `trigger_comment` is set in `harness.toml`, the Superintendent will only pick up Issues that have at least one comment containing the specified string (case-insensitive). This lets you control which Issues HERMIT handles without relying solely on labels or assignment.
+
+Example: set `trigger_comment = "/hermit"` and comment `/hermit` on any Issue you want HERMIT to process.
 
 ---
 
