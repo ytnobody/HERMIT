@@ -230,11 +230,17 @@ func resolveBranchPrefix(cfg Config) string {
 }
 
 func cmdServe() {
-	// If harness.toml exists in the current working directory, use it as-is.
-	// Otherwise fall back to the binary's real location — Claude Code may not
-	// honour the cwd setting when spawning the MCP server, and in that case
-	// the binary lives next to harness.toml in the project root.
-	if _, err := os.Stat("harness.toml"); os.IsNotExist(err) {
+	// HERMIT_PROJECT_DIR explicitly pins the project root regardless of cwd.
+	// cmdInstall writes this into the MCP server env so the correct harness.toml
+	// is always used, even when Claude Code does not honour the cwd field.
+	if projectDir := os.Getenv("HERMIT_PROJECT_DIR"); projectDir != "" {
+		if err := os.Chdir(projectDir); err != nil {
+			log.Printf("warn: HERMIT_PROJECT_DIR=%q: %v; falling back to cwd resolution", projectDir, err)
+		}
+	} else if _, err := os.Stat("harness.toml"); os.IsNotExist(err) {
+		// No explicit project dir set and harness.toml not in cwd: fall back to
+		// the binary's real location — Claude Code may not honour the cwd field
+		// when spawning the MCP server.
 		if execPath, err := os.Executable(); err == nil {
 			if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
 				execPath = resolved
@@ -343,7 +349,8 @@ func cmdInstall() {
 		"args":    []string{"serve"},
 		"cwd":     cwd,
 		"env": map[string]string{
-			"GITHUB_TOKEN": "${GITHUB_TOKEN}",
+			"GITHUB_TOKEN":      "${GITHUB_TOKEN}",
+			"HERMIT_PROJECT_DIR": cwd,
 		},
 	}
 	settings["mcpServers"] = mcpServers
