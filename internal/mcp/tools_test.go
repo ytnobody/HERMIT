@@ -12,16 +12,18 @@ import (
 )
 
 type mockGithubClient struct {
-	issues        []gh.Issue
-	issuesErr     error
-	comments      []gh.IssueComment
-	commentsErr   error
-	prComments    []gh.PRComment
-	prCommentsErr error
-	assignErr     error
-	prStatus      *gh.PRStatus
-	prStatusErr   error
-	mergePRErr    error
+	issues              []gh.Issue
+	issuesErr           error
+	comments            []gh.IssueComment
+	commentsErr         error
+	prComments          []gh.PRComment
+	prCommentsErr       error
+	assignErr           error
+	prStatus            *gh.PRStatus
+	prStatusErr         error
+	mergePRErr          error
+	commentMatchResult  bool
+	commentMatchErr     error
 }
 
 func (m *mockGithubClient) CheckRateLimit(_ int) error { return nil }
@@ -82,6 +84,10 @@ func (m *mockGithubClient) GetIssueComments(_ int, _ string) ([]gh.IssueComment,
 	return m.comments, m.commentsErr
 }
 
+func (m *mockGithubClient) HasCommentMatching(_ int, _ string) (bool, error) {
+	return m.commentMatchResult, m.commentMatchErr
+}
+
 func (m *mockGithubClient) GetDefaultBranch() (string, error) {
 	return "main", nil
 }
@@ -97,7 +103,14 @@ func (m *mockGithubClient) GetRecentPRComments(_ int, _ string) ([]gh.PRComment,
 func newTestServer(t *testing.T, client githubClient) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "")
+	return s
+}
+
+func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger)
 	return s
 }
 
@@ -248,5 +261,102 @@ func TestGetPRComments_apiError(t *testing.T) {
 
 	if !result.IsError {
 		t.Fatal("expected error result")
+	}
+}
+
+func TestListIssues_noTrigger_returnsAll(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 1, Title: "issue one"},
+		{Number: 2, Title: "issue two"},
+	}
+	s := newTestServer(t, &mockGithubClient{issues: issues})
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got []any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 issues, got %d", len(got))
+	}
+}
+
+func TestListIssues_withTrigger_filtersMatched(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 1, Title: "issue one"},
+		{Number: 2, Title: "issue two"},
+	}
+	// Only issue 1 has a matching comment
+	mock := &mockGithubClient{issues: issues, commentMatchResult: true}
+	s := newTestServerWithTrigger(t, mock, "/hermit")
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got []any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	// All issues matched because mock returns true for all
+	if len(got) != 2 {
+		t.Errorf("expected 2 issues (all matched), got %d", len(got))
+	}
+}
+
+func TestListIssues_withTrigger_noMatch(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 1, Title: "issue one"},
+		{Number: 2, Title: "issue two"},
+	}
+	mock := &mockGithubClient{issues: issues, commentMatchResult: false}
+	s := newTestServerWithTrigger(t, mock, "/hermit")
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	// When no issues match, json.Marshal(nil) returns "null"
+	text := tc.Text
+	if text != "null" {
+		var got []any
+		if err := json.Unmarshal([]byte(text), &got); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected 0 issues, got %d", len(got))
+		}
+	}
+}
+
+func TestListIssues_withTrigger_commentCheckError(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 1, Title: "issue one"},
+	}
+	mock := &mockGithubClient{issues: issues, commentMatchErr: errors.New("api error")}
+	s := newTestServerWithTrigger(t, mock, "/hermit")
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if !result.IsError {
+		t.Fatal("expected error result when comment check fails")
 	}
 }
