@@ -213,6 +213,9 @@ func TestCmdInstall_Valid(t *testing.T) {
 	if !strings.Contains(string(data), "hermit") {
 		t.Errorf("settings.json missing hermit entry: %s", data)
 	}
+	if !strings.Contains(string(data), "HERMIT_PROJECT_DIR") {
+		t.Errorf("settings.json missing HERMIT_PROJECT_DIR: %s", data)
+	}
 }
 
 // TestCmdInstall_NoHarness verifies that cmdInstall fatals when there is no
