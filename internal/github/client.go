@@ -440,6 +440,22 @@ func (c *Client) CloseIssueInRepo(number int, comment, owner, repo string) error
 	return err
 }
 
+// HasCommentMatching returns true when any comment on the given issue contains
+// the provided trigger string (case-insensitive substring match).
+func (c *Client) HasCommentMatching(number int, trigger string) (bool, error) {
+	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, number, nil)
+	if err != nil {
+		return false, err
+	}
+	lower := strings.ToLower(trigger)
+	for _, cm := range comments {
+		if strings.Contains(strings.ToLower(cm.GetBody()), lower) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // GetIssueComments returns all comments on the given issue number.
 // since is an optional RFC3339 timestamp; when non-empty only comments
 // updated at or after that time are returned.

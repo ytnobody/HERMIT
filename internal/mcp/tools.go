@@ -31,12 +31,13 @@ type githubClient interface {
 	ListOpenPRs(issueNum int) ([]gh.PRInfo, error)
 	ReviewPR(num int) (string, error)
 	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
+	HasCommentMatching(number int, trigger string) (bool, error)
 	GetDefaultBranch() (string, error)
 	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
 	GetRecentPRComments(prNumber int, since string) ([]gh.PRComment, error)
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig) {
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -63,7 +64,6 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			var issues []gh.Issue
 			var err error
 			if len(repos) > 0 {
-				// Multi-repo mode: label filter is set per-repo in RepoConfig.
 				issues, err = client.ListAllIssues(repos)
 			} else {
 				label := req.GetString("label", "")
@@ -71,6 +71,19 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			}
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if triggerComment != "" {
+				var filtered []gh.Issue
+				for _, issue := range issues {
+					matched, err := client.HasCommentMatching(issue.Number, triggerComment)
+					if err != nil {
+						return mcp.NewToolResultError(err.Error()), nil
+					}
+					if matched {
+						filtered = append(filtered, issue)
+					}
+				}
+				issues = filtered
 			}
 			b, err := json.Marshal(issues)
 			if err != nil {

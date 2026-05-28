@@ -42,10 +42,11 @@ type Config struct {
 	// Repos overrides the single [github] section when present.
 	Repos []RepoConfig `toml:"repos"`
 	Agent struct {
-		MaxEngineers int    `toml:"max_engineers"`
-		Language     string `toml:"language"`
-		BranchPrefix string `toml:"branch_prefix"`
-		LoopInterval int    `toml:"loop_interval"`
+		MaxEngineers    int    `toml:"max_engineers"`
+		Language        string `toml:"language"`
+		BranchPrefix    string `toml:"branch_prefix"`
+		LoopInterval    int    `toml:"loop_interval"`
+		TriggerComment  string `toml:"trigger_comment"`
 	} `toml:"agent"`
 	Model struct {
 		Superintendent string `toml:"superintendent"`
@@ -266,7 +267,7 @@ func cmdServe() {
 		repos = append(repos, gh.RepoConfig{Owner: r.Owner, Repo: r.Repo, Label: r.Label})
 	}
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment); err != nil {
 		fatal(err.Error())
 	}
 }
