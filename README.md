@@ -68,6 +68,7 @@ Once `/hermit` is running, just open GitHub Issues in your repository. HERMIT wi
 
 > **Version control:** The files generated in `.claude/commands/` (`hermit.md`, `hermit-pause.md`, `hermit-resume.md`) **should be committed to git**. They are project-scoped slash commands — similar to `CLAUDE.md` — and allow all contributors using Claude Code on the same project to access `/hermit`, `/hermit-pause`, and `/hermit-resume` without running `hermit install` themselves.
 
+
 ---
 
 ## Setting Up a Project
