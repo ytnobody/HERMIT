@@ -46,12 +46,16 @@ curl -sSL https://raw.githubusercontent.com/ytnobody/HERMIT/refs/heads/main/inst
 cd your-project
 hermit init
 
-# 3. Start Claude Code and launch the Superintendent loop
+# 3. Commit the generated files (including hermit's slash commands) to version control
+git add harness.toml CLAUDE.md .github/ISSUE_TEMPLATE/hermit-task.md .claude/
+git commit -m "chore: initialize HERMIT"
+
+# 4. Start Claude Code and launch the Superintendent loop
 claude
 # Inside Claude Code:
 # /hermit
 
-# 4. Create a GitHub Issue — HERMIT picks it up automatically and handles everything
+# 5. Create a GitHub Issue — HERMIT picks it up automatically and handles everything
 ```
 
 Once `/hermit` is running, just open GitHub Issues in your repository. HERMIT will automatically:
@@ -61,6 +65,8 @@ Once `/hermit` is running, just open GitHub Issues in your repository. HERMIT wi
 - Evaluate risk and merge if safe
 
 > **Note:** `install.sh` calls `hermit install` automatically, so the MCP server registration happens as part of the one-liner install command.
+
+> **Version control:** The files generated in `.claude/commands/` (`hermit.md`, `hermit-pause.md`, `hermit-resume.md`) **should be committed to git**. They are project-scoped slash commands — similar to `CLAUDE.md` — and allow all contributors using Claude Code on the same project to access `/hermit`, `/hermit-pause`, and `/hermit-resume` without running `hermit install` themselves.
 
 ---
 
