@@ -388,6 +388,7 @@ func cmdInstall() {
 		}
 		if allOK {
 			fmt.Println("✓ Slash commands installed to", commandsDir)
+			fmt.Println("  Tip: run `git add .claude/commands/` to commit hermit's slash commands to version control.")
 		}
 	}
 
