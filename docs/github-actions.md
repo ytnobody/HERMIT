@@ -12,10 +12,12 @@ HERMIT can drive Claude Code CLI using `ANTHROPIC_API_KEY` from a GitHub Actions
 
 Use `hermit use <preset>` to switch the `[model]` section in `harness.toml`.
 
-| Preset Name   | superintendent         | engineer               | Use Case                  |
-|--------------|------------------------|------------------------|---------------------------|
-| `claude`      | claude-sonnet-5        | claude-sonnet-5        | Balanced (default)        |
-| `claude-cheap`| claude-sonnet-5        | claude-haiku-4-5-20251001 | Cost-optimized         |
+| Preset Name   | superintendent         | engineer               | analyst          | Use Case                  |
+|--------------|------------------------|------------------------|-------------------|---------------------------|
+| `claude`      | claude-sonnet-5        | claude-sonnet-5        | claude-opus-4-8 (effort: high) | Balanced (default) |
+| `claude-cheap`| claude-sonnet-5        | claude-haiku-4-5-20251001 | claude-sonnet-5 | Cost-optimized         |
+
+The `analyst` role (added in issue #107) translates non-engineers' plain-language requirements, gathered via a standing requirements-hearing Issue, into REQ-ID formatted requirements-doc updates (see #106). Because misinterpretation here cascades directly into implementation effort, it defaults to a higher-tier model/effort than `engineer` even in the balanced `claude` preset.
 
 ```bash
 # Apply a preset locally and commit
