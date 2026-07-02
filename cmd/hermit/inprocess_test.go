@@ -491,6 +491,187 @@ func TestCmdInit_WriteSettingsError(t *testing.T) {
 	t.Fatalf("expected non-zero exit, got: %v", err)
 }
 
+// TestCmdInit_ClaudeMdWiresEngineerModelAndEffort verifies that answering the
+// new reasoning-effort prompts during `hermit init` causes the generated
+// CLAUDE.md's Engineer-spawning step to reference the configured Engineer
+// model and effort via the Agent tool (fixing the wiring gap described in
+// issue #96).
+func TestCmdInit_ClaudeMdWiresEngineerModelAndEffort(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	r, w, _ := os.Pipe()
+	origStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = origStdin }()
+
+	go func() {
+		sc := bufio.NewWriter(w)
+		fmt.Fprintln(sc, "test-owner")
+		fmt.Fprintln(sc, "test-repo")
+		fmt.Fprintln(sc, "en")
+		fmt.Fprintln(sc, "2")
+		fmt.Fprintln(sc, "claude-cheap") // preset: sonnet superintendent / haiku engineer
+		fmt.Fprintln(sc, "high")         // superintendent effort
+		fmt.Fprintln(sc, "medium")       // engineer effort
+		sc.Flush()
+		w.Close()
+	}()
+
+	pr2, pw2, _ := os.Pipe()
+	origOut := os.Stdout
+	os.Stdout = pw2
+	cmdInit()
+	pw2.Close()
+	os.Stdout = origOut
+	var buf bytes.Buffer
+	buf.ReadFrom(pr2)
+
+	claudeMd, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("CLAUDE.md not created: %v", err)
+	}
+	content := string(claudeMd)
+	if !strings.Contains(content, `model: "claude-haiku-4-5-20251001"`) {
+		t.Errorf("CLAUDE.md Engineer-spawn step missing engineer model wiring:\n%s", content)
+	}
+	if !strings.Contains(content, `effort: "medium"`) {
+		t.Errorf("CLAUDE.md Engineer-spawn step missing engineer effort wiring:\n%s", content)
+	}
+
+	harnessToml, err := os.ReadFile(filepath.Join(dir, "harness.toml"))
+	if err != nil {
+		t.Fatalf("harness.toml not created: %v", err)
+	}
+	htContent := string(harnessToml)
+	if !strings.Contains(htContent, `superintendent_effort = "high"`) {
+		t.Errorf("harness.toml missing superintendent_effort:\n%s", htContent)
+	}
+	if !strings.Contains(htContent, `engineer_effort       = "medium"`) {
+		t.Errorf("harness.toml missing engineer_effort:\n%s", htContent)
+	}
+}
+
+// TestCmdInit_ClaudeMdOmitsEffortClauseWhenUnset verifies that leaving the
+// effort prompts empty produces a model-only Agent tool wiring instruction
+// (no dangling `effort: ""` clause).
+func TestCmdInit_ClaudeMdOmitsEffortClauseWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	r, w, _ := os.Pipe()
+	origStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = origStdin }()
+
+	go func() {
+		sc := bufio.NewWriter(w)
+		fmt.Fprintln(sc, "test-owner")
+		fmt.Fprintln(sc, "test-repo")
+		fmt.Fprintln(sc, "en")
+		fmt.Fprintln(sc, "2")
+		fmt.Fprintln(sc, "claude") // preset
+		fmt.Fprintln(sc, "")       // superintendent effort: none
+		fmt.Fprintln(sc, "")       // engineer effort: none
+		sc.Flush()
+		w.Close()
+	}()
+
+	pr2, pw2, _ := os.Pipe()
+	origOut := os.Stdout
+	os.Stdout = pw2
+	cmdInit()
+	pw2.Close()
+	os.Stdout = origOut
+	var buf bytes.Buffer
+	buf.ReadFrom(pr2)
+
+	claudeMd, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("CLAUDE.md not created: %v", err)
+	}
+	content := string(claudeMd)
+	if !strings.Contains(content, `model: "claude-sonnet-5"`) {
+		t.Errorf("CLAUDE.md Engineer-spawn step missing engineer model wiring:\n%s", content)
+	}
+	if strings.Contains(content, "effort:") {
+		t.Errorf("CLAUDE.md should omit effort clause when unset:\n%s", content)
+	}
+}
+
+// --- cmdUse ---
+
+// TestCmdUse_WritesModelAndEffort verifies that `hermit use <preset>` writes
+// both the model and (when present) the reasoning-effort fields into
+// harness.toml's [model] section.
+func TestCmdUse_WritesModelAndEffort(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	if err := os.WriteFile("harness.toml", []byte(minimalHarnessTOML+"\n[model]\nsuperintendent = \"old\"\nengineer = \"old\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const presetName = "__test_issue96_with_effort__"
+	modelPresets[presetName] = ModelPreset{
+		Superintendent:       "claude-x",
+		Engineer:             "claude-y",
+		SuperintendentEffort: "high",
+		EngineerEffort:       "low",
+		Description:          "test preset with effort",
+	}
+	defer delete(modelPresets, presetName)
+
+	cmdUse(presetName)
+
+	data, err := os.ReadFile("harness.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`superintendent = "claude-x"`,
+		`engineer = "claude-y"`,
+		`superintendent_effort = "high"`,
+		`engineer_effort = "low"`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("harness.toml missing %q:\n%s", want, content)
+		}
+	}
+}
+
+// TestCmdUse_OmitsEffortWhenPresetHasNone verifies that presets without an
+// effort configured (like the built-in "claude" preset) do not write
+// superintendent_effort/engineer_effort keys.
+func TestCmdUse_OmitsEffortWhenPresetHasNone(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	if err := os.WriteFile("harness.toml", []byte(minimalHarnessTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdUse("claude")
+
+	data, err := os.ReadFile("harness.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, "_effort") {
+		t.Errorf("harness.toml should not contain effort keys for the 'claude' preset:\n%s", content)
+	}
+}
+
 // --- main subcommand routing for serve/install/init ---
 
 func TestMain_Init(t *testing.T) {

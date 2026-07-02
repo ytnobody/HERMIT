@@ -50,6 +50,12 @@ type Config struct {
 	Model struct {
 		Superintendent string `toml:"superintendent"`
 		Engineer       string `toml:"engineer"`
+		// SuperintendentEffort/EngineerEffort configure the Claude Agent
+		// tool's reasoning effort (e.g. low/medium/high/xhigh/max) for the
+		// Superintendent and Engineer roles respectively. Both are optional;
+		// when empty, no effort is specified and the caller's default applies.
+		SuperintendentEffort string `toml:"superintendent_effort"`
+		EngineerEffort       string `toml:"engineer_effort"`
 	} `toml:"model"`
 	Notification struct {
 		WebhookURL string `toml:"webhook_url"`
@@ -58,10 +64,15 @@ type Config struct {
 }
 
 // ModelPreset defines superintendent/engineer model combinations.
+// SuperintendentEffort/EngineerEffort are optional reasoning-effort defaults
+// (low/medium/high/xhigh/max) applied for each role; an empty value means no
+// effort is specified and the caller's default applies.
 type ModelPreset struct {
-	Superintendent string
-	Engineer       string
-	Description    string
+	Superintendent       string
+	Engineer             string
+	SuperintendentEffort string
+	EngineerEffort       string
+	Description          string
 }
 
 var modelPresets = map[string]ModelPreset{
@@ -207,6 +218,12 @@ func cmdUse(presetName string) {
 	}
 	modelSection["superintendent"] = preset.Superintendent
 	modelSection["engineer"] = preset.Engineer
+	if preset.SuperintendentEffort != "" {
+		modelSection["superintendent_effort"] = preset.SuperintendentEffort
+	}
+	if preset.EngineerEffort != "" {
+		modelSection["engineer_effort"] = preset.EngineerEffort
+	}
 	cfg["model"] = modelSection
 
 	f, err := os.Create(harnessFile)
@@ -221,6 +238,12 @@ func cmdUse(presetName string) {
 	fmt.Printf("✓ preset %q applied\n", presetName)
 	fmt.Printf("  superintendent: %s\n", preset.Superintendent)
 	fmt.Printf("  engineer:       %s\n", preset.Engineer)
+	if preset.SuperintendentEffort != "" {
+		fmt.Printf("  superintendent_effort: %s\n", preset.SuperintendentEffort)
+	}
+	if preset.EngineerEffort != "" {
+		fmt.Printf("  engineer_effort:       %s\n", preset.EngineerEffort)
+	}
 }
 
 func githubToken() string {
@@ -435,28 +458,42 @@ func cmdInit() {
 		preset = modelPresets["claude"]
 	}
 
+	supEffort := promptDefault(sc, "Superintendent reasoning effort [low/medium/high/xhigh/max] (optional, default: none): ", preset.SuperintendentEffort)
+	engEffort := promptDefault(sc, "Engineer reasoning effort [low/medium/high/xhigh/max] (optional, default: none): ", preset.EngineerEffort)
+
 	type tmplData struct {
-		Owner               string
-		Repo                string
-		Language            string
-		MaxEngineers        int
-		SuperintendentModel string
-		EngineerModel       string
+		Owner                string
+		Repo                 string
+		Language             string
+		MaxEngineers         int
+		SuperintendentModel  string
+		EngineerModel        string
+		SuperintendentEffort string
+		EngineerEffort       string
 	}
 	data := tmplData{
-		Owner:               owner,
-		Repo:                repo,
-		Language:            lang,
-		MaxEngineers:        maxEng,
-		SuperintendentModel: preset.Superintendent,
-		EngineerModel:       preset.Engineer,
+		Owner:                owner,
+		Repo:                 repo,
+		Language:             lang,
+		MaxEngineers:         maxEng,
+		SuperintendentModel:  preset.Superintendent,
+		EngineerModel:        preset.Engineer,
+		SuperintendentEffort: supEffort,
+		EngineerEffort:       engEffort,
 	}
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
 	writeTemplate("templates/CLAUDE.md.tmpl", "CLAUDE.md", struct {
 		MaxEngineers       int
 		ProjectCodingRules string
-	}{MaxEngineers: maxEng, ProjectCodingRules: "Describe your project-specific coding guidelines here."})
+		EngineerModel      string
+		EngineerEffort     string
+	}{
+		MaxEngineers:       maxEng,
+		ProjectCodingRules: "Describe your project-specific coding guidelines here.",
+		EngineerModel:      preset.Engineer,
+		EngineerEffort:     engEffort,
+	})
 
 	// Generate .github/ISSUE_TEMPLATE/hermit-task.md for Issue creation guidance.
 	if err := writeIssueTemplate(); err != nil {

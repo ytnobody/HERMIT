@@ -37,6 +37,62 @@ language = "en"
 	}
 }
 
+// TestLoadConfig_ModelEffort verifies that superintendent_effort/engineer_effort
+// under [model] are parsed into Config.Model.
+func TestLoadConfig_ModelEffort(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[model]
+superintendent = "claude-sonnet-4-5"
+engineer       = "claude-haiku-4-5"
+superintendent_effort = "high"
+engineer_effort       = "medium"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Model.Superintendent != "claude-sonnet-4-5" || cfg.Model.Engineer != "claude-haiku-4-5" {
+		t.Errorf("unexpected model config: %+v", cfg.Model)
+	}
+	if cfg.Model.SuperintendentEffort != "high" {
+		t.Errorf("expected superintendent_effort=high, got %q", cfg.Model.SuperintendentEffort)
+	}
+	if cfg.Model.EngineerEffort != "medium" {
+		t.Errorf("expected engineer_effort=medium, got %q", cfg.Model.EngineerEffort)
+	}
+}
+
+// TestLoadConfig_ModelEffort_OmittedDefaultsEmpty verifies that omitting the
+// effort keys leaves them as the empty string (no effort specified).
+func TestLoadConfig_ModelEffort_OmittedDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[model]
+superintendent = "claude-sonnet-4-5"
+engineer       = "claude-sonnet-4-5"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Model.SuperintendentEffort != "" || cfg.Model.EngineerEffort != "" {
+		t.Errorf("expected empty effort fields, got: %+v", cfg.Model)
+	}
+}
+
 func TestLoadConfig_MultiRepos(t *testing.T) {
 	dir := t.TempDir()
 	content := `[github]
@@ -415,12 +471,53 @@ func TestWriteTemplate_Valid(t *testing.T) {
 	defer os.Chdir(prev)
 
 	type data struct {
-		Owner               string
-		Repo                string
-		Language            string
-		MaxEngineers        int
-		SuperintendentModel string
-		EngineerModel       string
+		Owner                string
+		Repo                 string
+		Language             string
+		MaxEngineers         int
+		SuperintendentModel  string
+		EngineerModel        string
+		SuperintendentEffort string
+		EngineerEffort       string
+	}
+	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data{
+		Owner: "owner", Repo: "repo", Language: "ja", MaxEngineers: 4,
+		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5",
+		SuperintendentEffort: "high", EngineerEffort: "medium",
+	})
+	content, err := os.ReadFile(filepath.Join(dir, "harness.toml"))
+	if err != nil {
+		t.Fatalf("harness.toml not created: %v", err)
+	}
+	if !strings.Contains(string(content), "owner") {
+		t.Errorf("harness.toml missing owner: %s", content)
+	}
+	if !strings.Contains(string(content), `superintendent_effort = "high"`) {
+		t.Errorf("harness.toml missing superintendent_effort: %s", content)
+	}
+	if !strings.Contains(string(content), `engineer_effort       = "medium"`) {
+		t.Errorf("harness.toml missing engineer_effort: %s", content)
+	}
+}
+
+// TestWriteTemplate_HarnessToml_EffortOmittedWhenEmpty verifies that the
+// superintendent_effort/engineer_effort keys are omitted entirely (rather
+// than written as empty strings) when no effort is configured.
+func TestWriteTemplate_HarnessToml_EffortOmittedWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	type data struct {
+		Owner                string
+		Repo                 string
+		Language             string
+		MaxEngineers         int
+		SuperintendentModel  string
+		EngineerModel        string
+		SuperintendentEffort string
+		EngineerEffort       string
 	}
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data{
 		Owner: "owner", Repo: "repo", Language: "ja", MaxEngineers: 4,
@@ -430,8 +527,8 @@ func TestWriteTemplate_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("harness.toml not created: %v", err)
 	}
-	if !strings.Contains(string(content), "owner") {
-		t.Errorf("harness.toml missing owner: %s", content)
+	if strings.Contains(string(content), "_effort") {
+		t.Errorf("harness.toml should omit effort keys when unset: %s", content)
 	}
 }
 

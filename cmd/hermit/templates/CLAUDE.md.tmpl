@@ -18,6 +18,7 @@ Repeat the following cycle.
      b. Create a worktree with `create_worktree` (base_branch: default branch)
 6. **Spawn all Engineers for the Issues prepared in step 5 in parallel at once using the Agent tool**
    - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
+   - Call the Agent tool with `model: "{{ .EngineerModel }}"`{{ if .EngineerEffort }} and `effort: "{{ .EngineerEffort }}"`{{ end }} so each Engineer runs with the model{{ if .EngineerEffort }}/effort{{ end }} configured in `harness.toml`'s `[model]` section
    - If the parallel count exceeds {{ .MaxEngineers }}, process the first {{ .MaxEngineers }} and defer the rest to the next cycle
 7. Wait for all Engineers to complete
 8. Run `evaluate_risk` on the PR for each Issue
