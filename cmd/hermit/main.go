@@ -18,6 +18,7 @@ import (
 	"github.com/ytnobody/hermit/internal/git"
 	"github.com/ytnobody/hermit/internal/mcp"
 	"github.com/ytnobody/hermit/internal/permissions"
+	"github.com/ytnobody/hermit/internal/requirements"
 )
 
 //go:embed templates/* templates/commands/*
@@ -61,6 +62,20 @@ type Config struct {
 		WebhookURL string `toml:"webhook_url"`
 		Type       string `toml:"type"`
 	} `toml:"notification"`
+	Requirements struct {
+		// Doc is the path (relative to the project root) to the requirements
+		// document parsed for "## REQ-xxx: ..." blocks. Defaults to
+		// "REQUIREMENTS.md" when empty.
+		Doc string `toml:"doc"`
+		// TestCommand is a shell command template used to check whether a
+		// given requirement's test exists and passes. "{req_id}" is
+		// substituted with the requirement's ID, e.g.:
+		//   test_command = "go test ./... -run '^{req_id}' -v"
+		// The template's output must include "=== RUN" markers (i.e.
+		// `go test -v` style output) for every test that matched, so the
+		// reconcile sweep can distinguish "no such test" from "test failed".
+		TestCommand string `toml:"test_command"`
+	} `toml:"requirements"`
 }
 
 // ModelPreset defines superintendent/engineer model combinations.
@@ -312,6 +327,8 @@ func cmdServe() {
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	prefix := resolveBranchPrefix(cfg)
 
+	runRequirementsSweep(rootDir, cfg, client)
+
 	// Convert []RepoConfig → []gh.RepoConfig for the MCP layer.
 	var repos []gh.RepoConfig
 	for _, r := range cfg.Repos {
@@ -321,6 +338,79 @@ func cmdServe() {
 	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment); err != nil {
 		fatal(err.Error())
 	}
+}
+
+// defaultRequirementsDoc is the requirements-document path used when
+// [requirements].doc is not set in harness.toml.
+const defaultRequirementsDoc = "REQUIREMENTS.md"
+
+// runRequirementsSweep runs the requirements reconcile sweep (Issue #106) at
+// `hermit serve` startup: it parses the requirements document for "## REQ-xxx:"
+// blocks, runs each requirement's test via the configured test_command, and
+// opens (deduped) GitHub issues for requirements that are unimplemented,
+// regressed, or whose text changed since the last sweep.
+//
+// This is intentionally best-effort: a project that hasn't adopted the
+// requirements-doc format yet (no doc file, or no test_command configured)
+// simply skips the sweep, and any sweep error is logged rather than fatal —
+// it must never prevent `hermit serve` from starting.
+func runRequirementsSweep(rootDir string, cfg Config, client *gh.Client) {
+	docPath := cfg.Requirements.Doc
+	if docPath == "" {
+		docPath = defaultRequirementsDoc
+	}
+	docPath = filepath.Join(rootDir, docPath)
+
+	data, err := os.ReadFile(docPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("requirements sweep: reading %s: %v", docPath, err)
+		}
+		return
+	}
+	if cfg.Requirements.TestCommand == "" {
+		log.Printf("requirements sweep: %s found but [requirements].test_command is not set in harness.toml; skipping", docPath)
+		return
+	}
+
+	reqs, err := requirements.Parse(string(data))
+	if err != nil {
+		log.Printf("requirements sweep: parsing %s: %v", docPath, err)
+		return
+	}
+	if len(reqs) == 0 {
+		return
+	}
+
+	results, err := requirements.Sweep(reqs, requirements.SweepOptions{
+		Runner: requirements.CommandRunner{Template: cfg.Requirements.TestCommand},
+		Issues: requirements.NewGitHubIssueClient(client),
+		Hashes: requirements.NewFileHashStore(rootDir),
+	})
+	if err != nil {
+		log.Printf("requirements sweep: %v", err)
+		return
+	}
+
+	var satisfied, unimplemented, regressed, skipped, issuesCreated int
+	for _, r := range results {
+		switch r.Status {
+		case requirements.Satisfied:
+			satisfied++
+		case requirements.Unimplemented:
+			unimplemented++
+		case requirements.Regressed:
+			regressed++
+		case requirements.Skipped:
+			skipped++
+		}
+		if r.IssueCreated {
+			issuesCreated++
+			log.Printf("requirements sweep: opened %s issue for %s", r.IssueKind, r.ReqID)
+		}
+	}
+	log.Printf("requirements sweep: %d satisfied, %d unimplemented, %d regressed, %d skipped (manual), %d issue(s) opened",
+		satisfied, unimplemented, regressed, skipped, issuesCreated)
 }
 
 func cmdCleanup() {

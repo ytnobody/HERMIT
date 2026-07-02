@@ -25,3 +25,9 @@ engineer_effort       = "{{ .EngineerEffort }}"  # reasoning effort: low/medium/
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook
 # type        = "slack"  # "slack" | "discord" | "generic" (auto-detected from URL if omitted)
+
+# [requirements]
+# doc          = "REQUIREMENTS.md"  # requirements doc parsed for "## REQ-xxx:" blocks (default shown)
+# # test_command must produce `go test -v` style output ("=== RUN" markers)
+# # so the sweep can tell "no such test" apart from "test failed".
+# test_command = "go test ./... -run '^{req_id}' -v"
