@@ -69,6 +69,62 @@ engineer_effort       = "medium"
 	}
 }
 
+// TestLoadConfig_AnalystModel verifies that [model].analyst/analyst_effort
+// are parsed into Config.Model (issue #107).
+func TestLoadConfig_AnalystModel(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[model]
+superintendent = "claude-sonnet-5"
+engineer       = "claude-sonnet-5"
+analyst        = "claude-opus-4-8"
+analyst_effort = "high"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Model.Analyst != "claude-opus-4-8" {
+		t.Errorf("expected analyst=claude-opus-4-8, got %q", cfg.Model.Analyst)
+	}
+	if cfg.Model.AnalystEffort != "high" {
+		t.Errorf("expected analyst_effort=high, got %q", cfg.Model.AnalystEffort)
+	}
+}
+
+// TestLoadConfig_AnalystModel_OmittedDefaultsEmpty verifies that a
+// harness.toml written before the Analyst role existed (issue #107) parses
+// without error, leaving Config.Model.Analyst/AnalystEffort as the empty
+// string (the caller is expected to apply resolveAnalystModel/
+// resolveAnalystEffort for backward-compatible fallback).
+func TestLoadConfig_AnalystModel_OmittedDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[model]
+superintendent = "claude-sonnet-5"
+engineer       = "claude-sonnet-5"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Model.Analyst != "" || cfg.Model.AnalystEffort != "" {
+		t.Errorf("expected empty analyst fields, got: %+v", cfg.Model)
+	}
+}
+
 // TestLoadConfig_ModelEffort_OmittedDefaultsEmpty verifies that omitting the
 // effort keys leaves them as the empty string (no effort specified).
 func TestLoadConfig_ModelEffort_OmittedDefaultsEmpty(t *testing.T) {
@@ -477,13 +533,15 @@ func TestWriteTemplate_Valid(t *testing.T) {
 		MaxEngineers         int
 		SuperintendentModel  string
 		EngineerModel        string
+		AnalystModel         string
 		SuperintendentEffort string
 		EngineerEffort       string
+		AnalystEffort        string
 	}
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data{
 		Owner: "owner", Repo: "repo", Language: "ja", MaxEngineers: 4,
-		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5",
-		SuperintendentEffort: "high", EngineerEffort: "medium",
+		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5", AnalystModel: "claude-opus-4-8",
+		SuperintendentEffort: "high", EngineerEffort: "medium", AnalystEffort: "high",
 	})
 	content, err := os.ReadFile(filepath.Join(dir, "harness.toml"))
 	if err != nil {
@@ -494,6 +552,12 @@ func TestWriteTemplate_Valid(t *testing.T) {
 	}
 	if !strings.Contains(string(content), `superintendent_effort = "high"`) {
 		t.Errorf("harness.toml missing superintendent_effort: %s", content)
+	}
+	if !strings.Contains(string(content), `analyst        = "claude-opus-4-8"`) {
+		t.Errorf("harness.toml missing analyst model: %s", content)
+	}
+	if !strings.Contains(string(content), `analyst_effort         = "high"`) {
+		t.Errorf("harness.toml missing analyst_effort: %s", content)
 	}
 	if !strings.Contains(string(content), `engineer_effort       = "medium"`) {
 		t.Errorf("harness.toml missing engineer_effort: %s", content)
@@ -516,12 +580,14 @@ func TestWriteTemplate_HarnessToml_EffortOmittedWhenEmpty(t *testing.T) {
 		MaxEngineers         int
 		SuperintendentModel  string
 		EngineerModel        string
+		AnalystModel         string
 		SuperintendentEffort string
 		EngineerEffort       string
+		AnalystEffort        string
 	}
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data{
 		Owner: "owner", Repo: "repo", Language: "ja", MaxEngineers: 4,
-		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5",
+		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5", AnalystModel: "claude-opus-4-8",
 	})
 	content, err := os.ReadFile(filepath.Join(dir, "harness.toml"))
 	if err != nil {
@@ -725,6 +791,9 @@ func TestModelPresets_NoStaleModelIDs(t *testing.T) {
 			if preset.Engineer == stale {
 				t.Errorf("preset %q: Engineer uses stale model ID %q", name, stale)
 			}
+			if preset.Analyst == stale {
+				t.Errorf("preset %q: Analyst uses stale model ID %q", name, stale)
+			}
 		}
 	}
 }
@@ -736,10 +805,13 @@ func TestModelPresets_ExpectedValues(t *testing.T) {
 		"claude": {
 			Superintendent: "claude-sonnet-5",
 			Engineer:       "claude-sonnet-5",
+			Analyst:        "claude-opus-4-8",
+			AnalystEffort:  "high",
 		},
 		"claude-cheap": {
 			Superintendent: "claude-sonnet-5",
 			Engineer:       "claude-haiku-4-5-20251001",
+			Analyst:        "claude-sonnet-5",
 		},
 	}
 
@@ -754,5 +826,54 @@ func TestModelPresets_ExpectedValues(t *testing.T) {
 		if gotPreset.Engineer != wantPreset.Engineer {
 			t.Errorf("preset %q: Engineer = %q, want %q", name, gotPreset.Engineer, wantPreset.Engineer)
 		}
+		if gotPreset.Analyst != wantPreset.Analyst {
+			t.Errorf("preset %q: Analyst = %q, want %q", name, gotPreset.Analyst, wantPreset.Analyst)
+		}
+		if gotPreset.AnalystEffort != wantPreset.AnalystEffort {
+			t.Errorf("preset %q: AnalystEffort = %q, want %q", name, gotPreset.AnalystEffort, wantPreset.AnalystEffort)
+		}
+	}
+}
+
+// --- resolveAnalystModel / resolveAnalystEffort ---
+
+// TestResolveAnalystModel_UsesConfiguredValue verifies that an explicitly
+// configured [model].analyst value is used as-is.
+func TestResolveAnalystModel_UsesConfiguredValue(t *testing.T) {
+	cfg := Config{}
+	cfg.Model.Superintendent = "claude-sonnet-5"
+	cfg.Model.Analyst = "claude-opus-4-8"
+
+	if got := resolveAnalystModel(cfg); got != "claude-opus-4-8" {
+		t.Errorf("resolveAnalystModel() = %q, want %q", got, "claude-opus-4-8")
+	}
+}
+
+// TestResolveAnalystModel_FallsBackToSuperintendent verifies backward
+// compatibility with harness.toml files written before the Analyst role
+// (issue #107) existed: when [model].analyst is unset, the Superintendent's
+// model is used instead of an empty string.
+func TestResolveAnalystModel_FallsBackToSuperintendent(t *testing.T) {
+	cfg := Config{}
+	cfg.Model.Superintendent = "claude-sonnet-5"
+
+	if got := resolveAnalystModel(cfg); got != "claude-sonnet-5" {
+		t.Errorf("resolveAnalystModel() = %q, want fallback %q", got, "claude-sonnet-5")
+	}
+}
+
+// TestResolveAnalystEffort_FallsBackToSuperintendentEffort mirrors
+// TestResolveAnalystModel_FallsBackToSuperintendent for reasoning effort.
+func TestResolveAnalystEffort_FallsBackToSuperintendentEffort(t *testing.T) {
+	cfg := Config{}
+	cfg.Model.SuperintendentEffort = "high"
+
+	if got := resolveAnalystEffort(cfg); got != "high" {
+		t.Errorf("resolveAnalystEffort() = %q, want fallback %q", got, "high")
+	}
+
+	cfg.Model.AnalystEffort = "medium"
+	if got := resolveAnalystEffort(cfg); got != "medium" {
+		t.Errorf("resolveAnalystEffort() = %q, want configured %q", got, "medium")
 	}
 }

@@ -12,18 +12,18 @@ import (
 )
 
 type mockGithubClient struct {
-	issues              []gh.Issue
-	issuesErr           error
-	comments            []gh.IssueComment
-	commentsErr         error
-	prComments          []gh.PRComment
-	prCommentsErr       error
-	assignErr           error
-	prStatus            *gh.PRStatus
-	prStatusErr         error
-	mergePRErr          error
-	commentMatchResult  bool
-	commentMatchErr     error
+	issues             []gh.Issue
+	issuesErr          error
+	comments           []gh.IssueComment
+	commentsErr        error
+	prComments         []gh.PRComment
+	prCommentsErr      error
+	assignErr          error
+	prStatus           *gh.PRStatus
+	prStatusErr        error
+	mergePRErr         error
+	commentMatchResult bool
+	commentMatchErr    error
 }
 
 func (m *mockGithubClient) CheckRateLimit(_ int) error { return nil }
@@ -103,14 +103,21 @@ func (m *mockGithubClient) GetRecentPRComments(_ int, _ string) ([]gh.PRComment,
 func newTestServer(t *testing.T, client githubClient) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "")
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", ModelConfig{})
 	return s
 }
 
 func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, ModelConfig{})
+	return s
+}
+
+func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", model)
 	return s
 }
 
@@ -358,5 +365,87 @@ func TestListIssues_withTrigger_commentCheckError(t *testing.T) {
 
 	if !result.IsError {
 		t.Fatal("expected error result when comment check fails")
+	}
+}
+
+// TestGetConfig_IncludesModelConfig verifies that get_config reports the
+// per-role model/reasoning-effort configuration (including the Analyst role
+// added in issue #107) alongside loop_interval.
+func TestGetConfig_IncludesModelConfig(t *testing.T) {
+	model := ModelConfig{
+		Superintendent:       "claude-sonnet-5",
+		Engineer:             "claude-haiku-4-5-20251001",
+		Analyst:              "claude-opus-4-8",
+		SuperintendentEffort: "high",
+		EngineerEffort:       "low",
+		AnalystEffort:        "high",
+	}
+	s := newTestServerWithModel(t, &mockGithubClient{}, model)
+
+	result := callTool(t, s, "get_config", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got struct {
+		LoopInterval int `json:"loop_interval"`
+		Model        struct {
+			Superintendent       string `json:"superintendent"`
+			Engineer             string `json:"engineer"`
+			Analyst              string `json:"analyst"`
+			SuperintendentEffort string `json:"superintendent_effort"`
+			EngineerEffort       string `json:"engineer_effort"`
+			AnalystEffort        string `json:"analyst_effort"`
+		} `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if got.LoopInterval != 120 {
+		t.Errorf("expected loop_interval=120, got %d", got.LoopInterval)
+	}
+	if got.Model.Analyst != "claude-opus-4-8" {
+		t.Errorf("expected model.analyst=claude-opus-4-8, got %q", got.Model.Analyst)
+	}
+	if got.Model.AnalystEffort != "high" {
+		t.Errorf("expected model.analyst_effort=high, got %q", got.Model.AnalystEffort)
+	}
+	if got.Model.Superintendent != "claude-sonnet-5" || got.Model.Engineer != "claude-haiku-4-5-20251001" {
+		t.Errorf("unexpected model config: %+v", got.Model)
+	}
+}
+
+// TestGetConfig_AnalystFallback_EmptyWhenUnresolved verifies that get_config
+// simply reflects whatever ModelConfig it was constructed with — callers
+// (cmd/hermit's resolveAnalystModel) are responsible for backward-compat
+// fallback before constructing ModelConfig, so an unset Analyst here is
+// surfaced as an empty string rather than silently defaulted inside the MCP
+// layer.
+func TestGetConfig_AnalystFallback_EmptyWhenUnresolved(t *testing.T) {
+	s := newTestServerWithModel(t, &mockGithubClient{}, ModelConfig{Superintendent: "claude-sonnet-5"})
+
+	result := callTool(t, s, "get_config", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	modelMap, ok := got["model"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected model object in response")
+	}
+	if modelMap["analyst"] != "" {
+		t.Errorf("expected analyst to be empty string when ModelConfig.Analyst is unset, got %v", modelMap["analyst"])
 	}
 }

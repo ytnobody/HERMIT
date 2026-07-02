@@ -14,8 +14,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/git"
+	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/mcp"
 	"github.com/ytnobody/hermit/internal/permissions"
 )
@@ -41,21 +41,30 @@ type Config struct {
 	// Repos overrides the single [github] section when present.
 	Repos []RepoConfig `toml:"repos"`
 	Agent struct {
-		MaxEngineers    int    `toml:"max_engineers"`
-		Language        string `toml:"language"`
-		BranchPrefix    string `toml:"branch_prefix"`
-		LoopInterval    int    `toml:"loop_interval"`
-		TriggerComment  string `toml:"trigger_comment"`
+		MaxEngineers   int    `toml:"max_engineers"`
+		Language       string `toml:"language"`
+		BranchPrefix   string `toml:"branch_prefix"`
+		LoopInterval   int    `toml:"loop_interval"`
+		TriggerComment string `toml:"trigger_comment"`
 	} `toml:"agent"`
 	Model struct {
 		Superintendent string `toml:"superintendent"`
 		Engineer       string `toml:"engineer"`
-		// SuperintendentEffort/EngineerEffort configure the Claude Agent
-		// tool's reasoning effort (e.g. low/medium/high/xhigh/max) for the
-		// Superintendent and Engineer roles respectively. Both are optional;
-		// when empty, no effort is specified and the caller's default applies.
+		// Analyst configures the model used for the Analyst (PM) role, which
+		// translates ambiguous human requirements gathered in the standing
+		// requirements-hearing Issue into REQ-ID formatted requirements-doc
+		// updates. Optional; when empty, resolveAnalystModel falls back to
+		// Superintendent for backward compatibility with harness.toml files
+		// written before the Analyst role existed.
+		Analyst string `toml:"analyst"`
+		// SuperintendentEffort/EngineerEffort/AnalystEffort configure the
+		// Claude Agent tool's reasoning effort (e.g. low/medium/high/xhigh/max)
+		// for the Superintendent, Engineer, and Analyst roles respectively.
+		// All are optional; when empty, no effort is specified and the
+		// caller's default applies.
 		SuperintendentEffort string `toml:"superintendent_effort"`
 		EngineerEffort       string `toml:"engineer_effort"`
+		AnalystEffort        string `toml:"analyst_effort"`
 	} `toml:"model"`
 	Notification struct {
 		WebhookURL string `toml:"webhook_url"`
@@ -63,15 +72,20 @@ type Config struct {
 	} `toml:"notification"`
 }
 
-// ModelPreset defines superintendent/engineer model combinations.
-// SuperintendentEffort/EngineerEffort are optional reasoning-effort defaults
-// (low/medium/high/xhigh/max) applied for each role; an empty value means no
-// effort is specified and the caller's default applies.
+// ModelPreset defines superintendent/engineer/analyst model combinations.
+// SuperintendentEffort/EngineerEffort/AnalystEffort are optional
+// reasoning-effort defaults (low/medium/high/xhigh/max) applied for each
+// role; an empty value means no effort is specified and the caller's default
+// applies. Analyst defaults to a higher-tier model than Engineer because
+// misinterpreting ambiguous human language into REQ-ID requirements cascades
+// directly into implementation effort downstream (see issue #107).
 type ModelPreset struct {
 	Superintendent       string
 	Engineer             string
+	Analyst              string
 	SuperintendentEffort string
 	EngineerEffort       string
+	AnalystEffort        string
 	Description          string
 }
 
@@ -79,12 +93,15 @@ var modelPresets = map[string]ModelPreset{
 	"claude": {
 		Superintendent: "claude-sonnet-5",
 		Engineer:       "claude-sonnet-5",
-		Description:    "Sonnet for both Superintendent and Engineer (balanced)",
+		Analyst:        "claude-opus-4-8",
+		AnalystEffort:  "high",
+		Description:    "Sonnet for Superintendent/Engineer, Opus for Analyst (balanced)",
 	},
 	"claude-cheap": {
 		Superintendent: "claude-sonnet-5",
 		Engineer:       "claude-haiku-4-5-20251001",
-		Description:    "Sonnet for Superintendent, Haiku for Engineers (cost-optimized)",
+		Analyst:        "claude-sonnet-5",
+		Description:    "Sonnet for Superintendent/Analyst, Haiku for Engineers (cost-optimized)",
 	},
 }
 
@@ -218,11 +235,15 @@ func cmdUse(presetName string) {
 	}
 	modelSection["superintendent"] = preset.Superintendent
 	modelSection["engineer"] = preset.Engineer
+	modelSection["analyst"] = preset.Analyst
 	if preset.SuperintendentEffort != "" {
 		modelSection["superintendent_effort"] = preset.SuperintendentEffort
 	}
 	if preset.EngineerEffort != "" {
 		modelSection["engineer_effort"] = preset.EngineerEffort
+	}
+	if preset.AnalystEffort != "" {
+		modelSection["analyst_effort"] = preset.AnalystEffort
 	}
 	cfg["model"] = modelSection
 
@@ -238,11 +259,15 @@ func cmdUse(presetName string) {
 	fmt.Printf("✓ preset %q applied\n", presetName)
 	fmt.Printf("  superintendent: %s\n", preset.Superintendent)
 	fmt.Printf("  engineer:       %s\n", preset.Engineer)
+	fmt.Printf("  analyst:        %s\n", preset.Analyst)
 	if preset.SuperintendentEffort != "" {
 		fmt.Printf("  superintendent_effort: %s\n", preset.SuperintendentEffort)
 	}
 	if preset.EngineerEffort != "" {
 		fmt.Printf("  engineer_effort:       %s\n", preset.EngineerEffort)
+	}
+	if preset.AnalystEffort != "" {
+		fmt.Printf("  analyst_effort:        %s\n", preset.AnalystEffort)
 	}
 }
 
@@ -273,6 +298,28 @@ func resolveBranchPrefix(cfg Config) string {
 		return "hermit"
 	}
 	return "hermit/" + login
+}
+
+// resolveAnalystModel returns the model configured for the Analyst role.
+// Falls back to the Superintendent model when [model].analyst is unset, so
+// that harness.toml files written before the Analyst role was introduced
+// (issue #107) keep working without modification.
+func resolveAnalystModel(cfg Config) string {
+	if cfg.Model.Analyst != "" {
+		return cfg.Model.Analyst
+	}
+	return cfg.Model.Superintendent
+}
+
+// resolveAnalystEffort returns the reasoning effort configured for the
+// Analyst role. Falls back to the Superintendent's effort when
+// [model].analyst_effort is unset, mirroring resolveAnalystModel's
+// backward-compatibility fallback.
+func resolveAnalystEffort(cfg Config) string {
+	if cfg.Model.AnalystEffort != "" {
+		return cfg.Model.AnalystEffort
+	}
+	return cfg.Model.SuperintendentEffort
 }
 
 func cmdServe() {
@@ -318,7 +365,16 @@ func cmdServe() {
 		repos = append(repos, gh.RepoConfig{Owner: r.Owner, Repo: r.Repo, Label: r.Label})
 	}
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment); err != nil {
+	model := mcp.ModelConfig{
+		Superintendent:       cfg.Model.Superintendent,
+		Engineer:             cfg.Model.Engineer,
+		Analyst:              resolveAnalystModel(cfg),
+		SuperintendentEffort: cfg.Model.SuperintendentEffort,
+		EngineerEffort:       cfg.Model.EngineerEffort,
+		AnalystEffort:        resolveAnalystEffort(cfg),
+	}
+
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, model); err != nil {
 		fatal(err.Error())
 	}
 }
@@ -460,6 +516,7 @@ func cmdInit() {
 
 	supEffort := promptDefault(sc, "Superintendent reasoning effort [low/medium/high/xhigh/max] (optional, default: none): ", preset.SuperintendentEffort)
 	engEffort := promptDefault(sc, "Engineer reasoning effort [low/medium/high/xhigh/max] (optional, default: none): ", preset.EngineerEffort)
+	analystEffort := promptDefault(sc, "Analyst reasoning effort [low/medium/high/xhigh/max] (optional, press Enter for preset default): ", preset.AnalystEffort)
 
 	type tmplData struct {
 		Owner                string
@@ -468,8 +525,10 @@ func cmdInit() {
 		MaxEngineers         int
 		SuperintendentModel  string
 		EngineerModel        string
+		AnalystModel         string
 		SuperintendentEffort string
 		EngineerEffort       string
+		AnalystEffort        string
 	}
 	data := tmplData{
 		Owner:                owner,
@@ -478,8 +537,10 @@ func cmdInit() {
 		MaxEngineers:         maxEng,
 		SuperintendentModel:  preset.Superintendent,
 		EngineerModel:        preset.Engineer,
+		AnalystModel:         preset.Analyst,
 		SuperintendentEffort: supEffort,
 		EngineerEffort:       engEffort,
+		AnalystEffort:        analystEffort,
 	}
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
@@ -488,11 +549,15 @@ func cmdInit() {
 		ProjectCodingRules string
 		EngineerModel      string
 		EngineerEffort     string
+		AnalystModel       string
+		AnalystEffort      string
 	}{
 		MaxEngineers:       maxEng,
 		ProjectCodingRules: "Describe your project-specific coding guidelines here.",
 		EngineerModel:      preset.Engineer,
 		EngineerEffort:     engEffort,
+		AnalystModel:       preset.Analyst,
+		AnalystEffort:      analystEffort,
 	})
 
 	// Generate .github/ISSUE_TEMPLATE/hermit-task.md for Issue creation guidance.
