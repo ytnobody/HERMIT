@@ -67,6 +67,14 @@ Evaluate the granularity and clarity of the Issue before starting work.
 4. Commit and create a PR using the `branch` name
 5. Report `worktree_path`, `branch`, and PR number to the Superintendent when done
 
+### gh CLI Usage Notes
+
+Some environments run a snap-installed `gh` (resolved via `/snap/bin/gh`). Snap's confinement gives `gh` a private `/tmp`, so it cannot read files under the host's `/tmp` even though the shell can read them just fine. `hermit doctor` warns about this, but keep it in mind whenever a step passes `gh` a file:
+
+- When passing `gh` a file body (e.g. `--body-file`), prefer standard input over a `/tmp` path: `gh issue edit N --body-file - < /path/to/file`
+- If a file argument is unavoidable, put the temporary file under the project directory (e.g. the worktree path) rather than `/tmp`
+- Never pass a `/tmp` path directly as a `gh` CLI argument
+
 ### Coding Guidelines
 
 {{ .ProjectCodingRules }}
