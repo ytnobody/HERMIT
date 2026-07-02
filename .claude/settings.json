@@ -17,13 +17,26 @@
       "Monitor",
       "WebFetch",
       "WebSearch",
+      "CronCreate",
+      "CronList",
+      "CronDelete",
+      "ToolSearch",
       "mcp__hermit__list_issues",
       "mcp__hermit__assign_issue",
       "mcp__hermit__create_worktree",
       "mcp__hermit__close_worktree",
       "mcp__hermit__evaluate_risk",
       "mcp__hermit__merge_pr",
-      "mcp__hermit__post_comment"
+      "mcp__hermit__add_issue_comment",
+      "mcp__hermit__get_default_branch",
+      "mcp__hermit__get_config",
+      "mcp__hermit__check_ci_status",
+      "mcp__hermit__get_recent_pr_comments",
+      "mcp__hermit__list_prs",
+      "mcp__hermit__get_issue_comments",
+      "mcp__hermit__get_lessons",
+      "mcp__hermit__notify",
+      "mcp__hermit__review_pr"
     ]
   }
 }
