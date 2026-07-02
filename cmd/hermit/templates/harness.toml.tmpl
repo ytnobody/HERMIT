@@ -13,6 +13,12 @@ language      = "{{ .Language }}"
 [model]
 superintendent = "{{ .SuperintendentModel }}"
 engineer       = "{{ .EngineerModel }}"
+{{- if .SuperintendentEffort }}
+superintendent_effort = "{{ .SuperintendentEffort }}"  # reasoning effort: low/medium/high/xhigh/max
+{{- end }}
+{{- if .EngineerEffort }}
+engineer_effort       = "{{ .EngineerEffort }}"  # reasoning effort: low/medium/high/xhigh/max
+{{- end }}
 
 # branch_prefix = "hermit/your-login"  # defaults to hermit/<gh_login> if omitted
 
