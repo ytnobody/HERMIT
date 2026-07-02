@@ -82,11 +82,12 @@ type PRFile struct {
 }
 
 type PRStatus struct {
-	Number    int
-	Additions int
-	Deletions int
-	Files     []PRFile
-	CIPassing bool
+	Number      int
+	Additions   int
+	Deletions   int
+	Files       []PRFile
+	CIPassing   bool
+	IssueNumber int // issue number detected from the PR body/title; 0 means not detected
 }
 
 type Client struct {
@@ -215,6 +216,33 @@ func (c *Client) ListOpenPRs(issueNum int) ([]PRInfo, error) {
 	return result, nil
 }
 
+// CountPRsForIssue returns the total number of pull requests, in any state
+// (open, closed, merged), whose title or body references the given issue
+// number. Used to detect when an issue required multiple attempted PRs.
+func (c *Client) CountPRsForIssue(issueNum int) (int, error) {
+	if issueNum <= 0 {
+		return 0, nil
+	}
+	prs, _, err := c.gh.PullRequests.List(context.Background(), c.owner, c.repo, &gogithub.PullRequestListOptions{
+		State:       "all",
+		ListOptions: gogithub.ListOptions{PerPage: 100},
+	})
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, pr := range prs {
+		detected := extractIssueNumber(pr.GetBody())
+		if detected == 0 {
+			detected = extractIssueNumber(pr.GetTitle())
+		}
+		if detected == issueNum {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // resolveRepo returns the owner/repo pair to use for an API call.
 // If the provided owner or repo strings are empty, the client's primary values
 // are used instead.
@@ -274,12 +302,18 @@ func (c *Client) GetPRStatusInRepo(number int, owner, repo string) (*PRStatus, e
 		ciPassing = false
 	}
 
+	issueNum := extractIssueNumber(pr.GetBody())
+	if issueNum == 0 {
+		issueNum = extractIssueNumber(pr.GetTitle())
+	}
+
 	return &PRStatus{
-		Number:    number,
-		Additions: pr.GetAdditions(),
-		Deletions: pr.GetDeletions(),
-		Files:     prFiles,
-		CIPassing: ciPassing,
+		Number:      number,
+		Additions:   pr.GetAdditions(),
+		Deletions:   pr.GetDeletions(),
+		Files:       prFiles,
+		CIPassing:   ciPassing,
+		IssueNumber: issueNum,
 	}, nil
 }
 

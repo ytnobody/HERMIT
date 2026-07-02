@@ -8,12 +8,18 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/ytnobody/hermit/internal/cihistory"
 	"github.com/ytnobody/hermit/internal/git"
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/notification"
 	"github.com/ytnobody/hermit/internal/risk"
 )
+
+// clarificationTrigger is the marker HERMIT looks for in Issue/PR comments to
+// detect that a human had to step in and request clarification mid-flow. See
+// docs/madflow-comparison.md.
+const clarificationTrigger = "[Clarification Needed]"
 
 type githubClient interface {
 	CheckRateLimit(threshold int) error
@@ -29,6 +35,7 @@ type githubClient interface {
 	MergePRInRepo(number int, owner, repo string) error
 	CloseIssue(number int, comment string) error
 	ListOpenPRs(issueNum int) ([]gh.PRInfo, error)
+	CountPRsForIssue(issueNum int) (int, error)
 	ReviewPR(num int) (string, error)
 	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
 	HasCommentMatching(number int, trigger string) (bool, error)
@@ -210,14 +217,35 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				_ = git.CloseWorktree(wtPath, branch)
 			}
 
+			// Gather real signals for lessons scoring.
+			ciWasFailing, _ := cihistory.WasFailing(rootDir, num)
+
+			hasMultiplePRs := false
+			if status.IssueNumber > 0 {
+				if count, err := client.CountPRsForIssue(status.IssueNumber); err == nil && count > 1 {
+					hasMultiplePRs = true
+				}
+			}
+
+			hasClarification := false
+			if matched, err := client.HasCommentMatching(num, clarificationTrigger); err == nil && matched {
+				hasClarification = true
+			}
+			if !hasClarification && status.IssueNumber > 0 {
+				if matched, err := client.HasCommentMatching(status.IssueNumber, clarificationTrigger); err == nil && matched {
+					hasClarification = true
+				}
+			}
+
 			// Score and record lesson
 			score, lesson, _ := lessons.ProcessMergedPR(
 				rootDir,
 				strings.ToUpper(string(level)),
-				false,
-				false,
-				false,
+				ciWasFailing,
+				hasMultiplePRs,
+				hasClarification,
 			)
+			_ = cihistory.ClearFailure(rootDir, num)
 
 			result := map[string]any{"merged": true, "score": score}
 			if lesson != "" {
@@ -389,7 +417,9 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			// If CI is failing, post an investigation comment on the PR.
+			// If CI is failing, post an investigation comment on the PR and
+			// record the failure so it counts against the lessons score even
+			// if the PR later passes and gets merged.
 			if !details.Passing && len(details.FailedOnly) > 0 {
 				var failNames []string
 				for _, f := range details.FailedOnly {
@@ -398,6 +428,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				msg := fmt.Sprintf("⚠️ HERMIT: CI/CD failure detected on PR #%d (SHA: %s).\nFailing checks: %s\nPlease investigate and fix before merging.",
 					num, details.SHA, strings.Join(failNames, ", "))
 				_ = client.PostCommentInRepo(num, msg, owner, repo)
+				_ = cihistory.RecordFailure(rootDir, num)
 			}
 			b, err := json.Marshal(details)
 			if err != nil {
