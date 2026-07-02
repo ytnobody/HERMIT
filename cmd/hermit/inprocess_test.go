@@ -563,9 +563,10 @@ func TestCmdInit_ClaudeMdWiresEngineerModelAndEffort(t *testing.T) {
 		fmt.Fprintln(sc, "test-repo")
 		fmt.Fprintln(sc, "en")
 		fmt.Fprintln(sc, "2")
-		fmt.Fprintln(sc, "claude-cheap") // preset: sonnet superintendent / haiku engineer
+		fmt.Fprintln(sc, "claude-cheap") // preset: sonnet superintendent / haiku engineer / sonnet analyst
 		fmt.Fprintln(sc, "high")         // superintendent effort
 		fmt.Fprintln(sc, "medium")       // engineer effort
+		fmt.Fprintln(sc, "low")          // analyst effort
 		sc.Flush()
 		w.Close()
 	}()
@@ -590,6 +591,12 @@ func TestCmdInit_ClaudeMdWiresEngineerModelAndEffort(t *testing.T) {
 	if !strings.Contains(content, `effort: "medium"`) {
 		t.Errorf("CLAUDE.md Engineer-spawn step missing engineer effort wiring:\n%s", content)
 	}
+	if !strings.Contains(content, `model: "claude-sonnet-5"`) {
+		t.Errorf("CLAUDE.md Analyst-spawn step missing analyst model wiring:\n%s", content)
+	}
+	if !strings.Contains(content, `effort: "low"`) {
+		t.Errorf("CLAUDE.md Analyst-spawn step missing analyst effort wiring:\n%s", content)
+	}
 
 	harnessToml, err := os.ReadFile(filepath.Join(dir, "harness.toml"))
 	if err != nil {
@@ -602,11 +609,20 @@ func TestCmdInit_ClaudeMdWiresEngineerModelAndEffort(t *testing.T) {
 	if !strings.Contains(htContent, `engineer_effort       = "medium"`) {
 		t.Errorf("harness.toml missing engineer_effort:\n%s", htContent)
 	}
+	if !strings.Contains(htContent, `analyst        = "claude-sonnet-5"`) {
+		t.Errorf("harness.toml missing analyst model:\n%s", htContent)
+	}
+	if !strings.Contains(htContent, `analyst_effort         = "low"`) {
+		t.Errorf("harness.toml missing analyst_effort:\n%s", htContent)
+	}
 }
 
 // TestCmdInit_ClaudeMdOmitsEffortClauseWhenUnset verifies that leaving the
 // effort prompts empty produces a model-only Agent tool wiring instruction
-// (no dangling `effort: ""` clause).
+// (no dangling `effort: ""` clause). Uses the "claude-cheap" preset, since
+// (unlike "claude") none of its roles — including Analyst, added in issue
+// #107 — have a default reasoning effort, so leaving every effort prompt
+// blank genuinely produces no effort clauses anywhere in CLAUDE.md.
 func TestCmdInit_ClaudeMdOmitsEffortClauseWhenUnset(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := os.Getwd()
@@ -624,9 +640,10 @@ func TestCmdInit_ClaudeMdOmitsEffortClauseWhenUnset(t *testing.T) {
 		fmt.Fprintln(sc, "test-repo")
 		fmt.Fprintln(sc, "en")
 		fmt.Fprintln(sc, "2")
-		fmt.Fprintln(sc, "claude") // preset
-		fmt.Fprintln(sc, "")       // superintendent effort: none
-		fmt.Fprintln(sc, "")       // engineer effort: none
+		fmt.Fprintln(sc, "claude-cheap") // preset: no default effort on any role
+		fmt.Fprintln(sc, "")             // superintendent effort: none
+		fmt.Fprintln(sc, "")             // engineer effort: none
+		fmt.Fprintln(sc, "")             // analyst effort: none
 		sc.Flush()
 		w.Close()
 	}()
@@ -645,8 +662,11 @@ func TestCmdInit_ClaudeMdOmitsEffortClauseWhenUnset(t *testing.T) {
 		t.Fatalf("CLAUDE.md not created: %v", err)
 	}
 	content := string(claudeMd)
-	if !strings.Contains(content, `model: "claude-sonnet-5"`) {
+	if !strings.Contains(content, `model: "claude-haiku-4-5-20251001"`) {
 		t.Errorf("CLAUDE.md Engineer-spawn step missing engineer model wiring:\n%s", content)
+	}
+	if !strings.Contains(content, `model: "claude-sonnet-5"`) {
+		t.Errorf("CLAUDE.md Analyst-spawn step missing analyst model wiring:\n%s", content)
 	}
 	if strings.Contains(content, "effort:") {
 		t.Errorf("CLAUDE.md should omit effort clause when unset:\n%s", content)
@@ -697,9 +717,12 @@ func TestCmdUse_WritesModelAndEffort(t *testing.T) {
 	}
 }
 
-// TestCmdUse_OmitsEffortWhenPresetHasNone verifies that presets without an
-// effort configured (like the built-in "claude" preset) do not write
-// superintendent_effort/engineer_effort keys.
+// TestCmdUse_OmitsEffortWhenPresetHasNone verifies that presets without a
+// superintendent/engineer effort configured (like the built-in "claude"
+// preset) do not write superintendent_effort/engineer_effort keys. The
+// "claude" preset does configure an analyst_effort (issue #107: Analyst
+// defaults to a higher-tier model/effort since misinterpretation cascades
+// into implementation work), so analyst_effort is expected to be present.
 func TestCmdUse_OmitsEffortWhenPresetHasNone(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := os.Getwd()
@@ -717,8 +740,17 @@ func TestCmdUse_OmitsEffortWhenPresetHasNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	if strings.Contains(content, "_effort") {
-		t.Errorf("harness.toml should not contain effort keys for the 'claude' preset:\n%s", content)
+	if strings.Contains(content, "superintendent_effort") {
+		t.Errorf("harness.toml should not contain superintendent_effort for the 'claude' preset:\n%s", content)
+	}
+	if strings.Contains(content, "engineer_effort") {
+		t.Errorf("harness.toml should not contain engineer_effort for the 'claude' preset:\n%s", content)
+	}
+	if !strings.Contains(content, `analyst_effort = "high"`) {
+		t.Errorf("harness.toml should contain analyst_effort=high for the 'claude' preset:\n%s", content)
+	}
+	if !strings.Contains(content, `analyst = "claude-opus-4-8"`) {
+		t.Errorf("harness.toml should contain analyst=claude-opus-4-8 for the 'claude' preset:\n%s", content)
 	}
 }
 

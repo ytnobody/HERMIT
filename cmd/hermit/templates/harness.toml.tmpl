@@ -13,11 +13,15 @@ language      = "{{ .Language }}"
 [model]
 superintendent = "{{ .SuperintendentModel }}"
 engineer       = "{{ .EngineerModel }}"
+analyst        = "{{ .AnalystModel }}"  # Analyst (PM): human requirements -> REQ-ID formatted requirements doc
 {{- if .SuperintendentEffort }}
 superintendent_effort = "{{ .SuperintendentEffort }}"  # reasoning effort: low/medium/high/xhigh/max
 {{- end }}
 {{- if .EngineerEffort }}
 engineer_effort       = "{{ .EngineerEffort }}"  # reasoning effort: low/medium/high/xhigh/max
+{{- end }}
+{{- if .AnalystEffort }}
+analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/high/xhigh/max
 {{- end }}
 
 # branch_prefix = "hermit/your-login"  # defaults to hermit/<gh_login> if omitted
