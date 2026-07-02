@@ -26,8 +26,7 @@
 | `assign_issue` | Marks an Issue as in-progress by adding a label and assigning |
 | `create_worktree` | Creates a `hermit/issue-{N}` branch and `/tmp/hermit-{N}` worktree |
 | `evaluate_risk` | Returns LOW/MEDIUM/HIGH based on PR change volume and impact area |
-| `merge_pr` | Merges after CI passes (rejects HIGH risk with a comment) |
-| `close_worktree` | Removes the worktree and branch |
+| `merge_pr` | Merges after CI passes (rejects HIGH risk with a comment); removes the worktree and branch when `worktree_path`/`branch` are provided |
 
 Subcommands: `serve`, `install`, `init`, `pause`, `resume`, `quit`, `status`
 

@@ -108,7 +108,7 @@ Claude Code starts
   └─ hermit serve auto-started (MCP subprocess)
        ↓ list_issues / assign_issue / create_worktree
        ↓ Agent spawn → Engineer × N
-       ↓ evaluate_risk / merge_pr / close_worktree
+       ↓ evaluate_risk / merge_pr (auto-cleans worktree on merge)
        ↓ (repeat)
 ```
 
@@ -149,9 +149,8 @@ No further action is needed. HERMIT handles the entire development workflow auto
 2. Mark as in-progress with `assign_issue`
 3. Spawn Engineers in parallel with the Agent tool (up to `max_engineers`)
 4. Risk evaluation with `evaluate_risk`
-5. If LOW/MEDIUM, auto-merge with `merge_pr` (skip HIGH with comment)
-6. Clean up worktrees with `close_worktree`
-7. Return to step 1
+5. If LOW/MEDIUM, auto-merge with `merge_pr`, passing `worktree_path`/`branch` so the worktree is cleaned up automatically (skip HIGH with comment)
+6. Return to step 1
 
 ---
 
@@ -163,8 +162,7 @@ No further action is needed. HERMIT handles the entire development workflow auto
 | `assign_issue` | Marks an Issue as in-progress by adding a label and assigning |
 | `create_worktree` | Creates a branch and git worktree for an Issue |
 | `evaluate_risk` | Returns LOW/MEDIUM/HIGH based on PR change volume and impact area |
-| `merge_pr` | Merges after CI passes; posts a risk comment and records a lesson |
-| `close_worktree` | Removes the worktree and branch |
+| `merge_pr` | Merges after CI passes; posts a risk comment, records a lesson, and removes the worktree/branch when `worktree_path`/`branch` are provided |
 | `check_ci_status` | Checks CI/CD status for a PR; auto-posts a comment if checks are failing |
 | `add_issue_comment` | Posts a comment on an Issue or PR |
 | `get_issue_comments` | Returns comments on an Issue, optionally filtered by timestamp |
