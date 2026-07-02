@@ -228,6 +228,20 @@ func TestCmdPauseFatal_WriteError(t *testing.T) {
 	_ = catchFatal(t, func() { cmdPause() })
 }
 
+// --- cmdQuit fatal path (read-only dir) ---
+
+func TestCmdQuitFatal_WriteError(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0o555)
+	defer os.Chmod(dir, 0o755)
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	// May not fail if running as root — that's acceptable.
+	_ = catchFatal(t, func() { cmdQuit() })
+}
+
 // --- cmdResume fatal path (non-empty directory) ---
 
 func TestCmdResumeFatal_RemoveNonEmpty(t *testing.T) {

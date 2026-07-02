@@ -93,6 +93,8 @@ func main() {
 		cmdPause()
 	case "resume":
 		cmdResume()
+	case "quit":
+		cmdQuit()
 	case "status":
 		cmdStatus()
 	case "use":
@@ -123,10 +125,18 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status|use|version|upgrade|cleanup|doctor|dry-run>")
+	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|quit|status|use|version|upgrade|cleanup|doctor|dry-run>")
 }
 
 const pauseFile = ".hermit-paused"
+
+// quitFile is a terminal flag file: unlike pauseFile (which is meant to be
+// resumed via `hermit resume`), quitFile signals that the Superintendent's
+// `/loop` should stop entirely — the loop must not call ScheduleWakeup again
+// once this file is present. There is no `hermit unquit`; starting a fresh
+// `/hermit` run again is the intended way to resume autonomous operation
+// after a quit.
+const quitFile = ".hermit-quit"
 
 func cmdPause() {
 	f, err := os.Create(pauseFile)
@@ -148,7 +158,20 @@ func cmdResume() {
 	fmt.Println("▶  Autonomous operation resumed.")
 }
 
+func cmdQuit() {
+	f, err := os.Create(quitFile)
+	if err != nil {
+		fatal(err.Error())
+	}
+	f.Close()
+	fmt.Println("⏹  Autonomous operation quit requested. The Superintendent loop will stop at the start of its next cycle and will not reschedule itself.")
+}
+
 func cmdStatus() {
+	if _, err := os.Stat(quitFile); err == nil {
+		fmt.Println("⏹  quit requested (loop will stop)")
+		return
+	}
 	if _, err := os.Stat(pauseFile); err == nil {
 		fmt.Println("⏸  paused")
 	} else {
@@ -347,7 +370,7 @@ func cmdInstall() {
 	if err := os.MkdirAll(commandsDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not create %s: %v\n", commandsDir, err)
 	} else {
-		cmdFiles := []string{"hermit.md", "hermit-pause.md", "hermit-resume.md"}
+		cmdFiles := []string{"hermit.md", "hermit-pause.md", "hermit-resume.md", "hermit-quit.md"}
 		allOK := true
 		for _, name := range cmdFiles {
 			src := "templates/commands/" + name
