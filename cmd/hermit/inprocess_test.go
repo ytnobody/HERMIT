@@ -534,7 +534,7 @@ func TestCmdInit_ClaudeMdWiresEngineerModelAndEffort(t *testing.T) {
 		t.Fatalf("CLAUDE.md not created: %v", err)
 	}
 	content := string(claudeMd)
-	if !strings.Contains(content, `model: "claude-haiku-4-5"`) {
+	if !strings.Contains(content, `model: "claude-haiku-4-5-20251001"`) {
 		t.Errorf("CLAUDE.md Engineer-spawn step missing engineer model wiring:\n%s", content)
 	}
 	if !strings.Contains(content, `effort: "medium"`) {
@@ -595,7 +595,7 @@ func TestCmdInit_ClaudeMdOmitsEffortClauseWhenUnset(t *testing.T) {
 		t.Fatalf("CLAUDE.md not created: %v", err)
 	}
 	content := string(claudeMd)
-	if !strings.Contains(content, `model: "claude-sonnet-4-5"`) {
+	if !strings.Contains(content, `model: "claude-sonnet-5"`) {
 		t.Errorf("CLAUDE.md Engineer-spawn step missing engineer model wiring:\n%s", content)
 	}
 	if strings.Contains(content, "effort:") {
