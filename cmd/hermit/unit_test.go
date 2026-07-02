@@ -289,6 +289,56 @@ func TestCmdPauseResumeStatus(t *testing.T) {
 	}
 }
 
+func TestCmdQuitStatus(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	// Initially running
+	var buf bytes.Buffer
+	origOut := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	cmdStatus()
+	w.Close()
+	os.Stdout = origOut
+	buf.ReadFrom(r)
+	if !strings.Contains(buf.String(), "running") {
+		t.Errorf("expected 'running', got %q", buf.String())
+	}
+
+	// Quit
+	buf.Reset()
+	r, w, _ = os.Pipe()
+	os.Stdout = w
+	cmdQuit()
+	w.Close()
+	os.Stdout = origOut
+	buf.ReadFrom(r)
+	if _, err := os.Stat(quitFile); os.IsNotExist(err) {
+		t.Error(".hermit-quit should exist after quit")
+	}
+	if !strings.Contains(buf.String(), "quit") {
+		t.Errorf("expected quit confirmation message, got %q", buf.String())
+	}
+
+	// Status should report quit requested, taking priority over pause
+	if err := os.WriteFile(pauseFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buf.Reset()
+	r, w, _ = os.Pipe()
+	os.Stdout = w
+	cmdStatus()
+	w.Close()
+	os.Stdout = origOut
+	buf.ReadFrom(r)
+	if !strings.Contains(buf.String(), "quit requested") {
+		t.Errorf("expected 'quit requested' status even with pause file present, got %q", buf.String())
+	}
+}
+
 func TestCmdPause_WriteError(t *testing.T) {
 	if os.Getenv("TEST_PAUSE_ERR") != "" {
 		// Change to a read-only dir to force write failure

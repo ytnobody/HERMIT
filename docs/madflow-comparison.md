@@ -29,7 +29,7 @@
 | `merge_pr` | Merges after CI passes (rejects HIGH risk with a comment) |
 | `close_worktree` | Removes the worktree and branch |
 
-Subcommands: `serve`, `install`, `init`, `pause`, `resume`, `status`
+Subcommands: `serve`, `install`, `init`, `pause`, `resume`, `quit`, `status`
 
 ---
 

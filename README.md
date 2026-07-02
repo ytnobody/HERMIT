@@ -66,7 +66,7 @@ Once `/hermit` is running, just open GitHub Issues in your repository. HERMIT wi
 
 > **Note:** `install.sh` calls `hermit install` automatically, so the MCP server registration happens as part of the one-liner install command.
 
-> **Version control:** The files generated in `.claude/commands/` (`hermit.md`, `hermit-pause.md`, `hermit-resume.md`) **should be committed to git**. They are project-scoped slash commands — similar to `CLAUDE.md` — and allow all contributors using Claude Code on the same project to access `/hermit`, `/hermit-pause`, and `/hermit-resume` without running `hermit install` themselves.
+> **Version control:** The files generated in `.claude/commands/` (`hermit.md`, `hermit-pause.md`, `hermit-resume.md`, `hermit-quit.md`) **should be committed to git**. They are project-scoped slash commands — similar to `CLAUDE.md` — and allow all contributors using Claude Code on the same project to access `/hermit`, `/hermit-pause`, `/hermit-resume`, and `/hermit-quit` without running `hermit install` themselves.
 
 
 ---
@@ -256,15 +256,24 @@ When `[[repos]]` is present, `list_issues` queries all configured repositories a
 
 ---
 
-## Pausing and Resuming Autonomous Operation
+## Pausing, Resuming, and Quitting Autonomous Operation
 
 ```sh
 hermit pause    # pause autonomous operation (creates .hermit-paused)
 hermit resume   # resume autonomous operation (removes .hermit-paused)
-hermit status   # check current state (running / paused)
+hermit quit     # terminate the /loop entirely (creates .hermit-quit)
+hermit status   # check current state (running / paused / quit requested)
 ```
 
 The Superintendent checks for `.hermit-paused` at the start of each cycle. Running `hermit pause` stops it after the current cycle completes; `hermit resume` resumes it immediately.
+
+`hermit pause` / `hermit resume` only suspend and resume the Issue-processing part of the cycle — the underlying `/loop` (and its recurring `ScheduleWakeup` reschedule) keeps running, waking up every cycle to re-check the pause flag. Use `hermit quit` (or the `/hermit-quit` skill) when you want to stop the `/loop` itself: it creates `.hermit-quit`, and the Superintendent cycle checks for it first, before the pause check. When present, the cycle stops without calling `ScheduleWakeup` again, ending the loop for good. Unlike pause, quitting is **not** resumable with `hermit resume` — start `/hermit` again to begin a fresh loop.
+
+| | `hermit pause` | `hermit quit` |
+|---|---|---|
+| Flag file | `.hermit-paused` | `.hermit-quit` |
+| Effect | Suspends Issue processing; `/loop` keeps ticking | Stops the `/loop` itself (no more `ScheduleWakeup`) |
+| Resumable? | Yes, via `hermit resume` | No — run `/hermit` again to restart |
 
 ---
 
@@ -287,9 +296,10 @@ When the score drops below 70, a lesson is generated and saved to `.hermit/lesso
 hermit serve     # Start the MCP server (stdio) — Claude Code auto-starts this, manual execution normally not needed
 hermit install   # Register MCP server via `claude mcp add` and install slash commands
 hermit init      # Initialize a project (generate harness.toml, CLAUDE.md, issue template, settings)
-hermit pause     # Pause autonomous operation
+hermit pause     # Pause autonomous operation (resumable)
 hermit resume    # Resume autonomous operation
-hermit status    # Show autonomous operation status (running / paused)
+hermit quit      # Terminate the Superintendent /loop entirely (not resumable)
+hermit status    # Show autonomous operation status (running / paused / quit requested)
 hermit use       # Apply a model preset to harness.toml (e.g. hermit use claude-cheap)
 hermit version   # Print the current hermit version
 hermit upgrade   # Download and install the latest hermit release
