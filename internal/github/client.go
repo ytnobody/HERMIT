@@ -408,6 +408,26 @@ func (c *Client) PostCommentInRepo(number int, body, owner, repo string) error {
 	return err
 }
 
+// CreateIssue opens a new issue on the client's primary repository and
+// returns its issue number.
+func (c *Client) CreateIssue(title, body string) (int, error) {
+	return c.CreateIssueInRepo(title, body, "", "")
+}
+
+// CreateIssueInRepo opens a new issue in a specific repo. Pass empty strings
+// to use the client's primary owner/repo.
+func (c *Client) CreateIssueInRepo(title, body, owner, repo string) (int, error) {
+	owner, repo = c.resolveRepo(owner, repo)
+	issue, _, err := c.gh.Issues.Create(context.Background(), owner, repo, &gogithub.IssueRequest{
+		Title: gogithub.String(title),
+		Body:  gogithub.String(body),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return issue.GetNumber(), nil
+}
+
 func (c *Client) FindPRForBranch(branch string) (int, error) {
 	prs, _, err := c.gh.PullRequests.List(context.Background(), c.owner, c.repo, &gogithub.PullRequestListOptions{
 		State: "open",

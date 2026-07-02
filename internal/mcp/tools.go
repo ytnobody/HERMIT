@@ -40,7 +40,7 @@ type githubClient interface {
 	GetRecentPRComments(prNumber int, since string) ([]gh.PRComment, error)
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config) {
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, model ModelConfig) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -383,10 +383,20 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("get_config",
-			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval."),
+			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval and the model/reasoning-effort configured for each role (superintendent, engineer, analyst)."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			b, _ := json.Marshal(map[string]any{"loop_interval": loopInterval})
+			b, _ := json.Marshal(map[string]any{
+				"loop_interval": loopInterval,
+				"model": map[string]any{
+					"superintendent":        model.Superintendent,
+					"engineer":              model.Engineer,
+					"analyst":               model.Analyst,
+					"superintendent_effort": model.SuperintendentEffort,
+					"engineer_effort":       model.EngineerEffort,
+					"analyst_effort":        model.AnalystEffort,
+				},
+			})
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)

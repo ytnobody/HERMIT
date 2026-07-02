@@ -28,8 +28,8 @@ func captureDoctorOutput(t *testing.T) string {
 
 func TestRunChecks_AllFields(t *testing.T) {
 	results := runChecks()
-	if len(results) != 5 {
-		t.Errorf("expected 5 checks, got %d", len(results))
+	if len(results) != 6 {
+		t.Errorf("expected 6 checks, got %d", len(results))
 	}
 
 	names := make([]string, len(results))
@@ -40,6 +40,7 @@ func TestRunChecks_AllFields(t *testing.T) {
 	expected := []string{
 		"git command is available",
 		"gh CLI is installed and authenticated",
+		"gh CLI installation method (snap /tmp confinement)",
 		"GITHUB_TOKEN is available",
 		"harness.toml exists with owner/repo",
 		"Claude Code (claude) is installed",
@@ -83,7 +84,7 @@ repo  = "test-repo"
 	defer os.Chdir(prev)
 
 	results := runChecks()
-	harnessResult := results[3]
+	harnessResult := results[4]
 	if !harnessResult.passed {
 		t.Errorf("expected harness check to pass, detail: %s", harnessResult.detail)
 	}
@@ -96,7 +97,7 @@ func TestRunChecks_HarnessMissing(t *testing.T) {
 	defer os.Chdir(prev)
 
 	results := runChecks()
-	harnessResult := results[3]
+	harnessResult := results[4]
 	if harnessResult.passed {
 		t.Error("expected harness check to fail when harness.toml is missing")
 	}
@@ -119,7 +120,7 @@ repo  = "test-repo"
 	defer os.Chdir(prev)
 
 	results := runChecks()
-	harnessResult := results[3]
+	harnessResult := results[4]
 	if harnessResult.passed {
 		t.Error("expected harness check to fail when owner is empty")
 	}
@@ -138,7 +139,7 @@ func TestRunChecks_HarnessBadTOML(t *testing.T) {
 	defer os.Chdir(prev)
 
 	results := runChecks()
-	harnessResult := results[3]
+	harnessResult := results[4]
 	if harnessResult.passed {
 		t.Error("expected harness check to fail with bad TOML")
 	}
@@ -150,7 +151,7 @@ func TestRunChecks_HarnessBadTOML(t *testing.T) {
 func TestRunChecks_GithubTokenFromEnv(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "testtoken123")
 	results := runChecks()
-	tokenResult := results[2]
+	tokenResult := results[3]
 	if !tokenResult.passed {
 		t.Error("expected GITHUB_TOKEN check to pass when env var is set")
 	}
@@ -162,12 +163,83 @@ func TestRunChecks_GithubTokenMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	results := runChecks()
-	tokenResult := results[2]
+	tokenResult := results[3]
 	if tokenResult.passed {
 		t.Error("expected GITHUB_TOKEN check to fail when env var and gh both unavailable")
 	}
 	if !strings.Contains(tokenResult.detail, "GITHUB_TOKEN not set") {
 		t.Errorf("expected detail about missing token, got %q", tokenResult.detail)
+	}
+}
+
+func TestIsSnapGh(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/snap/bin/gh", true},
+		{"/tmp/testdir/snap/bin/gh", true},
+		{"/usr/bin/gh", false},
+		{"/usr/local/bin/gh", false},
+		{"/home/user/.local/bin/gh", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isSnapGh(c.path); got != c.want {
+			t.Errorf("isSnapGh(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+// TestRunChecks_GhSnapWarning simulates a snap-confined gh (resolved via a
+// /snap/bin/gh-shaped path on PATH) and verifies runChecks emits a warning
+// for it without failing the overall check.
+func TestRunChecks_GhSnapWarning(t *testing.T) {
+	dir := t.TempDir()
+	snapBin := filepath.Join(dir, "snap", "bin")
+	if err := os.MkdirAll(snapBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ghScript := filepath.Join(snapBin, "gh")
+	if err := os.WriteFile(ghScript, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", snapBin)
+
+	results := runChecks()
+	snapResult := results[2]
+	if snapResult.name != "gh CLI installation method (snap /tmp confinement)" {
+		t.Fatalf("unexpected check at index 2: %q", snapResult.name)
+	}
+	if !snapResult.warn {
+		t.Error("expected warn=true for snap-installed gh")
+	}
+	if !snapResult.passed {
+		t.Error("expected snap gh check to report passed=true (it's a warning, not a failure)")
+	}
+	if !strings.Contains(snapResult.detail, "snap") || !strings.Contains(snapResult.detail, "/tmp") {
+		t.Errorf("expected detail to mention snap and /tmp, got %q", snapResult.detail)
+	}
+}
+
+// TestRunChecks_GhNoSnapWarning verifies non-snap gh installs (or gh not
+// installed at all) never trigger the snap warning.
+func TestRunChecks_GhNoSnapWarning(t *testing.T) {
+	ghPath, err := exec.LookPath("gh")
+	if err == nil && isSnapGh(ghPath) {
+		t.Skip("this environment's gh is itself a snap install; skipping non-snap assertion")
+	}
+
+	results := runChecks()
+	snapResult := results[2]
+	if snapResult.warn {
+		t.Errorf("expected no snap warning for non-snap/missing gh, got detail: %s", snapResult.detail)
+	}
+	if snapResult.detail != "" {
+		t.Errorf("expected empty detail when gh is not a snap install, got %q", snapResult.detail)
+	}
+	if !snapResult.passed {
+		t.Error("expected snap check to always report passed=true")
 	}
 }
 
