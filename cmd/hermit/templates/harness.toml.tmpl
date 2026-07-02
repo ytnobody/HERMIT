@@ -26,6 +26,11 @@ analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/
 
 # branch_prefix = "hermit/your-login"  # defaults to hermit/<gh_login> if omitted
 
+# [readiness]
+# min_body_length                 = 40                    # minimum non-whitespace chars in the Issue body
+# skip_acceptance_criteria_check  = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
+# label                           = "needs-clarification"  # label applied to Issues judged not ready; also excludes them from list_issues
+
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook
 # type        = "slack"  # "slack" | "discord" | "generic" (auto-detected from URL if omitted)

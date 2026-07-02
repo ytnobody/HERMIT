@@ -3,6 +3,7 @@ package mcp
 import (
 	"github.com/mark3labs/mcp-go/server"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/readiness"
 )
 
 // ModelConfig carries the resolved [model] section of harness.toml so that
@@ -20,8 +21,8 @@ type ModelConfig struct {
 	AnalystEffort        string
 }
 
-func Serve(client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, model ModelConfig) error {
+func Serve(client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, model ModelConfig) error {
 	s := server.NewMCPServer("hermit", "1.0.0")
-	registerTools(s, client, rateLimitThreshold, rootDir, branchPrefix, loopInterval, webhookURL, webhookType, repos, triggerComment, model)
+	registerTools(s, client, rateLimitThreshold, rootDir, branchPrefix, loopInterval, webhookURL, webhookType, repos, triggerComment, readinessCfg, model)
 	return server.ServeStdio(s)
 }
