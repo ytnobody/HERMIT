@@ -10,5 +10,5 @@ language      = "ja"
 # loop_interval = 270  # Superintendent cycle interval in seconds (default: 270)
 
 [model]
-superintendent = "claude-sonnet-4-5"
-engineer       = "claude-sonnet-4-5"
+superintendent = "claude-sonnet-5"
+engineer       = "claude-sonnet-5"

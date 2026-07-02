@@ -14,8 +14,8 @@ Use `hermit use <preset>` to switch the `[model]` section in `harness.toml`.
 
 | Preset Name   | superintendent         | engineer               | Use Case                  |
 |--------------|------------------------|------------------------|---------------------------|
-| `claude`      | claude-sonnet-4-5      | claude-sonnet-4-5      | Balanced (default)        |
-| `claude-cheap`| claude-sonnet-4-5      | claude-haiku-4-5       | Cost-optimized            |
+| `claude`      | claude-sonnet-5        | claude-sonnet-5        | Balanced (default)        |
+| `claude-cheap`| claude-sonnet-5        | claude-haiku-4-5-20251001 | Cost-optimized         |
 
 ```bash
 # Apply a preset locally and commit
