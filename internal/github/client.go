@@ -443,7 +443,14 @@ func (c *Client) CloseIssueInRepo(number int, comment, owner, repo string) error
 // HasCommentMatching returns true when any comment on the given issue contains
 // the provided trigger string (case-insensitive substring match).
 func (c *Client) HasCommentMatching(number int, trigger string) (bool, error) {
-	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, number, nil)
+	return c.HasCommentMatchingInRepo(number, trigger, "", "")
+}
+
+// HasCommentMatchingInRepo is the repo-aware variant of HasCommentMatching.
+// Pass empty strings to use the client's primary owner/repo.
+func (c *Client) HasCommentMatchingInRepo(number int, trigger, owner, repo string) (bool, error) {
+	owner, repo = c.resolveRepo(owner, repo)
+	comments, _, err := c.gh.Issues.ListComments(context.Background(), owner, repo, number, nil)
 	if err != nil {
 		return false, err
 	}
@@ -454,6 +461,21 @@ func (c *Client) HasCommentMatching(number int, trigger string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// AddLabel adds a label to an issue in the client's primary repo.
+func (c *Client) AddLabel(number int, label string) error {
+	return c.AddLabelInRepo(number, label, "", "")
+}
+
+// AddLabelInRepo adds a label to an issue in a specific repo. Pass empty
+// strings to use the client's primary owner/repo. Adding a label an issue
+// already has is a no-op on GitHub's side, so this is safe to call
+// repeatedly (idempotent).
+func (c *Client) AddLabelInRepo(number int, label, owner, repo string) error {
+	owner, repo = c.resolveRepo(owner, repo)
+	_, _, err := c.gh.Issues.AddLabelsToIssue(context.Background(), owner, repo, number, []string{label})
+	return err
 }
 
 // GetIssueComments returns all comments on the given issue number.

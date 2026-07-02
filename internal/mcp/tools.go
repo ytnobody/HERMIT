@@ -12,6 +12,7 @@ import (
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/notification"
+	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
@@ -32,12 +33,14 @@ type githubClient interface {
 	ReviewPR(num int) (string, error)
 	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
 	HasCommentMatching(number int, trigger string) (bool, error)
+	HasCommentMatchingInRepo(number int, trigger, owner, repo string) (bool, error)
+	AddLabelInRepo(number int, label, owner, repo string) error
 	GetDefaultBranch() (string, error)
 	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
 	GetRecentPRComments(prNumber int, since string) ([]gh.PRComment, error)
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string) {
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -72,6 +75,20 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+
+			// Issues already flagged as needing clarification are excluded from
+			// the queue up front (cheap check against the labels already
+			// returned by the list call — no extra API round-trip). They
+			// return to the queue once a human removes the label.
+			var candidates []gh.Issue
+			for _, issue := range issues {
+				if readiness.HasLabel(issue.Labels, readinessCfg.Label) {
+					continue
+				}
+				candidates = append(candidates, issue)
+			}
+			issues = candidates
+
 			if triggerComment != "" {
 				var filtered []gh.Issue
 				for _, issue := range issues {
@@ -85,6 +102,37 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				}
 				issues = filtered
 			}
+
+			// Deterministically judge whether each remaining Issue has enough
+			// information to start implementation. Issues judged not ready get
+			// a structured hearing comment (posted at most once, idempotently)
+			// and the readiness label, then are excluded from the returned
+			// queue until a human addresses the feedback.
+			var ready []gh.Issue
+			for _, issue := range issues {
+				result := readiness.Evaluate(issue.Body, readinessCfg)
+				if result.Ready {
+					ready = append(ready, issue)
+					continue
+				}
+
+				alreadyAsked, err := client.HasCommentMatchingInRepo(issue.Number, readiness.HearingMarker, issue.Owner, issue.Repo)
+				if err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				if !alreadyAsked {
+					comment := readiness.HearingComment(result.Reasons)
+					if err := client.PostCommentInRepo(issue.Number, comment, issue.Owner, issue.Repo); err != nil {
+						return mcp.NewToolResultError(err.Error()), nil
+					}
+				}
+				if err := client.AddLabelInRepo(issue.Number, readinessCfg.Label, issue.Owner, issue.Repo); err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				// Excluded from the returned queue either way.
+			}
+			issues = ready
+
 			b, err := json.Marshal(issues)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil

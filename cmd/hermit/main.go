@@ -14,10 +14,11 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/git"
+	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/mcp"
 	"github.com/ytnobody/hermit/internal/permissions"
+	"github.com/ytnobody/hermit/internal/readiness"
 )
 
 //go:embed templates/* templates/commands/*
@@ -41,11 +42,11 @@ type Config struct {
 	// Repos overrides the single [github] section when present.
 	Repos []RepoConfig `toml:"repos"`
 	Agent struct {
-		MaxEngineers    int    `toml:"max_engineers"`
-		Language        string `toml:"language"`
-		BranchPrefix    string `toml:"branch_prefix"`
-		LoopInterval    int    `toml:"loop_interval"`
-		TriggerComment  string `toml:"trigger_comment"`
+		MaxEngineers   int    `toml:"max_engineers"`
+		Language       string `toml:"language"`
+		BranchPrefix   string `toml:"branch_prefix"`
+		LoopInterval   int    `toml:"loop_interval"`
+		TriggerComment string `toml:"trigger_comment"`
 	} `toml:"agent"`
 	Model struct {
 		Superintendent string `toml:"superintendent"`
@@ -61,6 +62,20 @@ type Config struct {
 		WebhookURL string `toml:"webhook_url"`
 		Type       string `toml:"type"`
 	} `toml:"notification"`
+	Readiness struct {
+		// MinBodyLength is the minimum number of non-whitespace characters an
+		// Issue body must contain to be considered ready for implementation.
+		// Defaults to readiness.DefaultMinBodyLength when <= 0.
+		MinBodyLength int `toml:"min_body_length"`
+		// SkipAcceptanceCriteriaCheck disables the requirement that the Issue
+		// body contain an acceptance-criteria-like section. Defaults to false
+		// (i.e. the check is enabled) so the zero value is safe.
+		SkipAcceptanceCriteriaCheck bool `toml:"skip_acceptance_criteria_check"`
+		// Label is the GitHub label applied to Issues judged not ready, and
+		// used to exclude them from list_issues. Defaults to
+		// readiness.DefaultLabel when empty.
+		Label string `toml:"label"`
+	} `toml:"readiness"`
 }
 
 // ModelPreset defines superintendent/engineer model combinations.
@@ -318,7 +333,13 @@ func cmdServe() {
 		repos = append(repos, gh.RepoConfig{Owner: r.Owner, Repo: r.Repo, Label: r.Label})
 	}
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment); err != nil {
+	readinessCfg := readiness.Config{
+		MinBodyLength:             cfg.Readiness.MinBodyLength,
+		RequireAcceptanceCriteria: !cfg.Readiness.SkipAcceptanceCriteriaCheck,
+		Label:                     cfg.Readiness.Label,
+	}
+
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg); err != nil {
 		fatal(err.Error())
 	}
 }
@@ -566,6 +587,12 @@ func loadConfig() Config {
 	}
 	if cfg.Agent.LoopInterval <= 0 {
 		cfg.Agent.LoopInterval = 270
+	}
+	if cfg.Readiness.MinBodyLength <= 0 {
+		cfg.Readiness.MinBodyLength = readiness.DefaultMinBodyLength
+	}
+	if cfg.Readiness.Label == "" {
+		cfg.Readiness.Label = readiness.DefaultLabel
 	}
 	return cfg
 }
