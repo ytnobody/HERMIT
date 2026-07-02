@@ -12,3 +12,8 @@ language      = "ja"
 [model]
 superintendent = "claude-sonnet-5"
 engineer       = "claude-sonnet-5"
+
+# [readiness]
+# min_body_length                 = 40                    # minimum non-whitespace chars in the Issue body
+# skip_acceptance_criteria_check  = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
+# label                           = "needs-clarification"  # label applied to Issues judged not ready; also excludes them from list_issues
