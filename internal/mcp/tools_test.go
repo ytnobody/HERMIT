@@ -12,18 +12,19 @@ import (
 )
 
 type mockGithubClient struct {
-	issues              []gh.Issue
-	issuesErr           error
-	comments            []gh.IssueComment
-	commentsErr         error
-	prComments          []gh.PRComment
-	prCommentsErr       error
-	assignErr           error
-	prStatus            *gh.PRStatus
-	prStatusErr         error
-	mergePRErr          error
-	commentMatchResult  bool
-	commentMatchErr     error
+	issues             []gh.Issue
+	issuesErr          error
+	comments           []gh.IssueComment
+	commentsErr        error
+	prComments         []gh.PRComment
+	prCommentsErr      error
+	assignErr          error
+	prStatus           *gh.PRStatus
+	prStatusErr        error
+	mergePRErr         error
+	mergeCalled        bool
+	commentMatchResult bool
+	commentMatchErr    error
 }
 
 func (m *mockGithubClient) CheckRateLimit(_ int) error { return nil }
@@ -65,6 +66,7 @@ func (m *mockGithubClient) MergePR(_ int) error {
 }
 
 func (m *mockGithubClient) MergePRInRepo(_ int, _, _ string) error {
+	m.mergeCalled = true
 	return m.mergePRErr
 }
 
@@ -344,6 +346,150 @@ func TestListIssues_withTrigger_noMatch(t *testing.T) {
 		if len(got) != 0 {
 			t.Errorf("expected 0 issues, got %d", len(got))
 		}
+	}
+}
+
+func TestMergePR_highRisk_blocksByDefault(t *testing.T) {
+	status := &gh.PRStatus{
+		Number:    1,
+		Additions: 10,
+		Deletions: 0,
+		CIPassing: true,
+		Files: []gh.PRFile{
+			{Filename: "go.mod", Additions: 10},
+		},
+	}
+	mock := &mockGithubClient{prStatus: status}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1)})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if merged, _ := got["merged"].(bool); merged {
+		t.Errorf("expected merged to be false for HIGH risk PR, got %v", got["merged"])
+	}
+	if reason, _ := got["reason"].(string); reason != "high risk" {
+		t.Errorf("expected reason %q, got %v", "high risk", got["reason"])
+	}
+	if _, ok := got["risk_reasons"]; !ok {
+		t.Errorf("expected risk_reasons in response, got %v", got)
+	}
+	if mock.mergeCalled {
+		t.Errorf("expected MergePRInRepo not to be called for HIGH risk PR without force")
+	}
+}
+
+func TestMergePR_highRisk_forceMerges(t *testing.T) {
+	status := &gh.PRStatus{
+		Number:    1,
+		Additions: 10,
+		Deletions: 0,
+		CIPassing: true,
+		Files: []gh.PRFile{
+			{Filename: "go.mod", Additions: 10},
+		},
+	}
+	mock := &mockGithubClient{prStatus: status}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1), "force": true})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if merged, _ := got["merged"].(bool); !merged {
+		t.Errorf("expected merged to be true when force is set, got %v", got["merged"])
+	}
+	if !mock.mergeCalled {
+		t.Errorf("expected MergePRInRepo to be called when force is set")
+	}
+}
+
+func TestMergePR_lowRisk_mergesByDefault(t *testing.T) {
+	status := &gh.PRStatus{
+		Number:    1,
+		Additions: 5,
+		Deletions: 0,
+		CIPassing: true,
+		Files: []gh.PRFile{
+			{Filename: "README.md", Additions: 5},
+		},
+	}
+	mock := &mockGithubClient{prStatus: status}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1)})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if merged, _ := got["merged"].(bool); !merged {
+		t.Errorf("expected merged to be true for LOW risk PR, got %v", got["merged"])
+	}
+	if !mock.mergeCalled {
+		t.Errorf("expected MergePRInRepo to be called for LOW risk PR")
+	}
+}
+
+func TestMergePR_mediumRisk_mergesByDefault(t *testing.T) {
+	files := make([]gh.PRFile, 10)
+	for i := range files {
+		files[i] = gh.PRFile{Filename: "internal/foo.go", Additions: 1}
+	}
+	status := &gh.PRStatus{
+		Number:    1,
+		Additions: 10,
+		Deletions: 0,
+		CIPassing: true,
+		Files:     files,
+	}
+	mock := &mockGithubClient{prStatus: status}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1)})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if merged, _ := got["merged"].(bool); !merged {
+		t.Errorf("expected merged to be true for MEDIUM risk PR, got %v", got["merged"])
+	}
+	if !mock.mergeCalled {
+		t.Errorf("expected MergePRInRepo to be called for MEDIUM risk PR")
 	}
 }
 
