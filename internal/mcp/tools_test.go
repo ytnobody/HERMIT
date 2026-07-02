@@ -791,8 +791,12 @@ func TestEvaluateRisk_PerRepoOverrideAppliesOnlyToMatchingRepo(t *testing.T) {
 	result := callTool(t, s, "evaluate_risk", map[string]any{
 		"pr_number": float64(1), "owner": "myorg", "repo": "frontend",
 	})
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
 	var got map[string]any
-	if err := json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &got); err != nil {
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 	if got["level"] != "HIGH" {
@@ -804,8 +808,12 @@ func TestEvaluateRisk_PerRepoOverrideAppliesOnlyToMatchingRepo(t *testing.T) {
 	result2 := callTool(t, s, "evaluate_risk", map[string]any{
 		"pr_number": float64(1), "owner": "myorg", "repo": "backend",
 	})
+	tc2, ok := result2.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
 	var got2 map[string]any
-	if err := json.Unmarshal([]byte(result2.Content[0].(mcp.TextContent).Text), &got2); err != nil {
+	if err := json.Unmarshal([]byte(tc2.Text), &got2); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 	if got2["level"] != "LOW" {
@@ -814,8 +822,12 @@ func TestEvaluateRisk_PerRepoOverrideAppliesOnlyToMatchingRepo(t *testing.T) {
 
 	// No owner/repo (primary repo): also falls back to the default policy.
 	result3 := callTool(t, s, "evaluate_risk", map[string]any{"pr_number": float64(1)})
+	tc3, ok := result3.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
 	var got3 map[string]any
-	if err := json.Unmarshal([]byte(result3.Content[0].(mcp.TextContent).Text), &got3); err != nil {
+	if err := json.Unmarshal([]byte(tc3.Text), &got3); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 	if got3["level"] != "LOW" {
@@ -843,8 +855,12 @@ func TestMergePR_UsesPerRepoRiskOverrideForHighRiskComment(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected success, got error: %v", result.Content)
 	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
 	var got map[string]any
-	if err := json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &got); err != nil {
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 	if merged, ok := got["merged"].(bool); !ok || !merged {
