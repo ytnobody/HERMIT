@@ -4,13 +4,40 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/risk"
 )
+
+// wellSpecifiedBody is a body long enough, and containing an acceptance
+// criteria section, to satisfy the default readiness config — so that tests
+// unrelated to readiness are not accidentally affected by it.
+const wellSpecifiedBody = `## Background
+This describes a well-specified piece of work with enough detail to start.
+
+## Acceptance Criteria
+- Thing one works
+- Thing two works
+`
+
+type postedComment struct {
+	number int
+	body   string
+	owner  string
+	repo   string
+}
+
+type addedLabel struct {
+	number int
+	label  string
+	owner  string
+	repo   string
+}
 
 type mockGithubClient struct {
 	issues             []gh.Issue
@@ -25,6 +52,16 @@ type mockGithubClient struct {
 	mergePRErr         error
 	commentMatchResult bool
 	commentMatchErr    error
+
+	// hearingMatchResult, keyed by issue number, controls the result of
+	// HasCommentMatchingInRepo (used to check whether a readiness hearing
+	// comment was already posted on a given issue).
+	hearingMatchResult map[int]bool
+	hearingMatchErr    error
+
+	postedComments []postedComment
+	addedLabels    []addedLabel
+	addLabelErr    error
 }
 
 func (m *mockGithubClient) CheckRateLimit(_ int) error { return nil }
@@ -57,7 +94,8 @@ func (m *mockGithubClient) PostComment(_ int, _ string) error {
 	return nil
 }
 
-func (m *mockGithubClient) PostCommentInRepo(_ int, _, _, _ string) error {
+func (m *mockGithubClient) PostCommentInRepo(number int, body, owner, repo string) error {
+	m.postedComments = append(m.postedComments, postedComment{number: number, body: body, owner: owner, repo: repo})
 	return nil
 }
 
@@ -89,6 +127,21 @@ func (m *mockGithubClient) HasCommentMatching(_ int, _ string) (bool, error) {
 	return m.commentMatchResult, m.commentMatchErr
 }
 
+func (m *mockGithubClient) HasCommentMatchingInRepo(number int, _ string, _, _ string) (bool, error) {
+	if m.hearingMatchErr != nil {
+		return false, m.hearingMatchErr
+	}
+	return m.hearingMatchResult[number], nil
+}
+
+func (m *mockGithubClient) AddLabelInRepo(number int, label, owner, repo string) error {
+	if m.addLabelErr != nil {
+		return m.addLabelErr
+	}
+	m.addedLabels = append(m.addedLabels, addedLabel{number: number, label: label, owner: owner, repo: repo})
+	return nil
+}
+
 func (m *mockGithubClient) GetDefaultBranch() (string, error) {
 	return "main", nil
 }
@@ -103,15 +156,18 @@ func (m *mockGithubClient) GetRecentPRComments(_ int, _ string) ([]gh.PRComment,
 
 func newTestServer(t *testing.T, client githubClient) *server.MCPServer {
 	t.Helper()
-	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", risk.DefaultConfig(), nil)
-	return s
+	return newTestServerWithReadiness(t, client, "", readiness.DefaultConfig())
 }
 
 func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string) *server.MCPServer {
 	t.Helper()
+	return newTestServerWithReadiness(t, client, trigger, readiness.DefaultConfig())
+}
+
+func newTestServerWithReadiness(t *testing.T, client githubClient, trigger string, readinessCfg readiness.Config) *server.MCPServer {
+	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, risk.DefaultConfig(), nil)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{})
 	return s
 }
 
@@ -121,7 +177,14 @@ func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string)
 func newTestServerWithRisk(t *testing.T, client githubClient, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", defaultRiskConfig, repoRiskConfigs)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{})
+	return s
+}
+
+func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model)
 	return s
 }
 
@@ -277,8 +340,8 @@ func TestGetPRComments_apiError(t *testing.T) {
 
 func TestListIssues_noTrigger_returnsAll(t *testing.T) {
 	issues := []gh.Issue{
-		{Number: 1, Title: "issue one"},
-		{Number: 2, Title: "issue two"},
+		{Number: 1, Title: "issue one", Body: wellSpecifiedBody},
+		{Number: 2, Title: "issue two", Body: wellSpecifiedBody},
 	}
 	s := newTestServer(t, &mockGithubClient{issues: issues})
 
@@ -302,8 +365,8 @@ func TestListIssues_noTrigger_returnsAll(t *testing.T) {
 
 func TestListIssues_withTrigger_filtersMatched(t *testing.T) {
 	issues := []gh.Issue{
-		{Number: 1, Title: "issue one"},
-		{Number: 2, Title: "issue two"},
+		{Number: 1, Title: "issue one", Body: wellSpecifiedBody},
+		{Number: 2, Title: "issue two", Body: wellSpecifiedBody},
 	}
 	// Only issue 1 has a matching comment
 	mock := &mockGithubClient{issues: issues, commentMatchResult: true}
@@ -330,8 +393,8 @@ func TestListIssues_withTrigger_filtersMatched(t *testing.T) {
 
 func TestListIssues_withTrigger_noMatch(t *testing.T) {
 	issues := []gh.Issue{
-		{Number: 1, Title: "issue one"},
-		{Number: 2, Title: "issue two"},
+		{Number: 1, Title: "issue one", Body: wellSpecifiedBody},
+		{Number: 2, Title: "issue two", Body: wellSpecifiedBody},
 	}
 	mock := &mockGithubClient{issues: issues, commentMatchResult: false}
 	s := newTestServerWithTrigger(t, mock, "/hermit")
@@ -360,7 +423,7 @@ func TestListIssues_withTrigger_noMatch(t *testing.T) {
 
 func TestListIssues_withTrigger_commentCheckError(t *testing.T) {
 	issues := []gh.Issue{
-		{Number: 1, Title: "issue one"},
+		{Number: 1, Title: "issue one", Body: wellSpecifiedBody},
 	}
 	mock := &mockGithubClient{issues: issues, commentMatchErr: errors.New("api error")}
 	s := newTestServerWithTrigger(t, mock, "/hermit")
@@ -371,6 +434,7 @@ func TestListIssues_withTrigger_commentCheckError(t *testing.T) {
 		t.Fatal("expected error result when comment check fails")
 	}
 }
+
 
 // --- get_config / risk policy exposure ---
 
@@ -410,6 +474,204 @@ func TestGetConfig_IncludesDefaultRiskConfig(t *testing.T) {
 	}
 }
 
+// --- readiness behavior ---
+
+func TestListIssues_readiness_unreadyIssueGetsHearingCommentAndLabel(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 1, Title: "well specified", Body: wellSpecifiedBody},
+		{Number: 2, Title: "too thin", Body: "fix it"},
+	}
+	mock := &mockGithubClient{issues: issues, hearingMatchResult: map[int]bool{}}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got []gh.Issue
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 1 || got[0].Number != 1 {
+		t.Fatalf("expected only issue #1 to be returned, got %+v", got)
+	}
+
+	if len(mock.postedComments) != 1 || mock.postedComments[0].number != 2 {
+		t.Fatalf("expected exactly one hearing comment posted on issue #2, got %+v", mock.postedComments)
+	}
+	if !strings.Contains(mock.postedComments[0].body, readiness.HearingMarker) {
+		t.Fatalf("expected hearing comment to contain marker, got: %s", mock.postedComments[0].body)
+	}
+
+	if len(mock.addedLabels) != 1 || mock.addedLabels[0].number != 2 || mock.addedLabels[0].label != readiness.DefaultLabel {
+		t.Fatalf("expected needs-clarification label added to issue #2, got %+v", mock.addedLabels)
+	}
+}
+
+func TestListIssues_readiness_idempotent_noDuplicateHearingComment(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 2, Title: "too thin", Body: "fix it"},
+	}
+	// Hearing comment was already posted on issue #2 in a previous cycle.
+	mock := &mockGithubClient{issues: issues, hearingMatchResult: map[int]bool{2: true}}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	if len(mock.postedComments) != 0 {
+		t.Fatalf("expected no duplicate hearing comment to be posted, got %+v", mock.postedComments)
+	}
+	// The label should still be (re-)applied — this is idempotent on GitHub's
+	// side and ensures the issue stays excluded even if the label was
+	// somehow removed without a human response.
+	if len(mock.addedLabels) != 1 || mock.addedLabels[0].number != 2 {
+		t.Fatalf("expected label re-applied to issue #2, got %+v", mock.addedLabels)
+	}
+}
+
+func TestListIssues_readiness_excludesNeedsClarificationLabel(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 1, Title: "well specified", Body: wellSpecifiedBody},
+		{Number: 3, Title: "already flagged", Body: "fix it", Labels: []string{readiness.DefaultLabel}},
+	}
+	mock := &mockGithubClient{issues: issues}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got []gh.Issue
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 1 || got[0].Number != 1 {
+		t.Fatalf("expected only issue #1 to be returned, labeled issue excluded, got %+v", got)
+	}
+	// The already-labeled issue should not trigger a fresh comment/label call.
+	if len(mock.postedComments) != 0 {
+		t.Fatalf("expected no hearing comment for already-labeled issue, got %+v", mock.postedComments)
+	}
+}
+
+func TestListIssues_readiness_configurableThreshold(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 1, Title: "short but allowed", Body: "0123456789"},
+	}
+
+	t.Run("lenient threshold allows short body", func(t *testing.T) {
+		mock := &mockGithubClient{issues: issues, hearingMatchResult: map[int]bool{}}
+		lenient := readiness.Config{MinBodyLength: 5, RequireAcceptanceCriteria: false, Label: readiness.DefaultLabel}
+		s := newTestServerWithReadiness(t, mock, "", lenient)
+
+		result := callTool(t, s, "list_issues", map[string]any{})
+		if result.IsError {
+			t.Fatalf("expected success, got error: %v", result.Content)
+		}
+		tc, ok := result.Content[0].(mcp.TextContent)
+		if !ok {
+			t.Fatalf("expected TextContent")
+		}
+		var got []gh.Issue
+		if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected issue to pass under lenient threshold, got %+v", got)
+		}
+	})
+
+	t.Run("strict threshold rejects the same body", func(t *testing.T) {
+		mock := &mockGithubClient{issues: issues, hearingMatchResult: map[int]bool{}}
+		strict := readiness.Config{MinBodyLength: 1000, RequireAcceptanceCriteria: false, Label: readiness.DefaultLabel}
+		s := newTestServerWithReadiness(t, mock, "", strict)
+
+		result := callTool(t, s, "list_issues", map[string]any{})
+		if result.IsError {
+			t.Fatalf("expected success, got error: %v", result.Content)
+		}
+		tc, ok := result.Content[0].(mcp.TextContent)
+		if !ok {
+			t.Fatalf("expected TextContent")
+		}
+		if tc.Text != "null" {
+			var got []gh.Issue
+			if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("expected issue to be rejected under strict threshold, got %+v", got)
+			}
+		}
+		if len(mock.postedComments) != 1 {
+			t.Fatalf("expected hearing comment posted under strict threshold, got %+v", mock.postedComments)
+		}
+	})
+}
+
+// TestGetConfig_IncludesModelConfig verifies that get_config reports the
+// per-role model/reasoning-effort configuration (including the Analyst role
+// added in issue #107) alongside loop_interval.
+func TestGetConfig_IncludesModelConfig(t *testing.T) {
+	model := ModelConfig{
+		Superintendent:       "claude-sonnet-5",
+		Engineer:             "claude-haiku-4-5-20251001",
+		Analyst:              "claude-opus-4-8",
+		SuperintendentEffort: "high",
+		EngineerEffort:       "low",
+		AnalystEffort:        "high",
+	}
+	s := newTestServerWithModel(t, &mockGithubClient{}, model)
+
+	result := callTool(t, s, "get_config", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got struct {
+		LoopInterval int `json:"loop_interval"`
+		Model        struct {
+			Superintendent       string `json:"superintendent"`
+			Engineer             string `json:"engineer"`
+			Analyst              string `json:"analyst"`
+			SuperintendentEffort string `json:"superintendent_effort"`
+			EngineerEffort       string `json:"engineer_effort"`
+			AnalystEffort        string `json:"analyst_effort"`
+		} `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if got.LoopInterval != 120 {
+		t.Errorf("expected loop_interval=120, got %d", got.LoopInterval)
+	}
+	if got.Model.Analyst != "claude-opus-4-8" {
+		t.Errorf("expected model.analyst=claude-opus-4-8, got %q", got.Model.Analyst)
+	}
+	if got.Model.AnalystEffort != "high" {
+		t.Errorf("expected model.analyst_effort=high, got %q", got.Model.AnalystEffort)
+	}
+	if got.Model.Superintendent != "claude-sonnet-5" || got.Model.Engineer != "claude-haiku-4-5-20251001" {
+		t.Errorf("unexpected model config: %+v", got.Model)
+	}
+}
+
 func TestGetConfig_IncludesRiskOverrides(t *testing.T) {
 	overrides := map[string]risk.Config{
 		"myorg/frontend": {HighFileThreshold: 3, HighLineThreshold: 50, HighPaths: []string{"src/"}},
@@ -439,6 +701,36 @@ func TestGetConfig_IncludesRiskOverrides(t *testing.T) {
 	}
 	if hf, ok := frontend["high_file_threshold"].(float64); !ok || hf != 3 {
 		t.Errorf("expected myorg/frontend high_file_threshold=3, got %v", frontend["high_file_threshold"])
+	}
+}
+
+// TestGetConfig_AnalystFallback_EmptyWhenUnresolved verifies that get_config
+// simply reflects whatever ModelConfig it was constructed with — callers
+// (cmd/hermit's resolveAnalystModel) are responsible for backward-compat
+// fallback before constructing ModelConfig, so an unset Analyst here is
+// surfaced as an empty string rather than silently defaulted inside the MCP
+// layer.
+func TestGetConfig_AnalystFallback_EmptyWhenUnresolved(t *testing.T) {
+	s := newTestServerWithModel(t, &mockGithubClient{}, ModelConfig{Superintendent: "claude-sonnet-5"})
+
+	result := callTool(t, s, "get_config", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	modelMap, ok := got["model"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected model object in response")
+	}
+	if modelMap["analyst"] != "" {
+		t.Errorf("expected analyst to be empty string when ModelConfig.Analyst is unset, got %v", modelMap["analyst"])
 	}
 }
 

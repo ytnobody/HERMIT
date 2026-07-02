@@ -215,6 +215,11 @@ engineer       = "claude-sonnet-5"   # model used for Engineer roles
 # medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
 # medium_line_threshold = 200   # MEDIUM risk when this many or more lines changed
 
+# [readiness]
+# min_body_length                = 40                    # minimum non-whitespace chars required in the Issue body
+# skip_acceptance_criteria_check = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
+# label                          = "needs-clarification"  # label applied to Issues judged not ready; also excludes them from list_issues
+
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook
 # type        = "slack"   # "slack" | "discord" | "generic" (auto-detected from URL if omitted)
@@ -231,6 +236,22 @@ HERMIT automatically monitors the GitHub API rate limit before each operation. W
 When `trigger_comment` is set in `harness.toml`, the Superintendent will only pick up Issues that have at least one comment containing the specified string (case-insensitive). This lets you control which Issues HERMIT handles without relying solely on labels or assignment.
 
 Example: set `trigger_comment = "/hermit"` and comment `/hermit` on any Issue you want HERMIT to process.
+
+### Issue Readiness Checks
+
+Before an Issue reaches the Superintendent's queue, `list_issues` runs a deterministic (non-LLM) readiness check against each Issue body — no guessing whether the requirements are clear enough, and no relying on the model to remember to ask. An Issue is judged **not ready** when:
+
+- the body is empty,
+- the body is shorter than `min_body_length` (default: 40 non-whitespace characters), or
+- the body has no acceptance-criteria-like section (an "Acceptance Criteria" / "受け入れ条件" heading), unless `skip_acceptance_criteria_check = true`.
+
+When an Issue is judged not ready, HERMIT:
+
+1. Posts a structured hearing comment asking for the four things needed to safely implement it: purpose (目的), scope (スコープ), acceptance criteria (受け入れ条件), and explicit non-goals (やらないこと). This comment is only ever posted once per Issue — a hidden marker is used to detect it on later cycles.
+2. Applies the `needs-clarification` label (configurable via `label`).
+3. Excludes the Issue from the `list_issues` result until a human removes the label (or triggers a fresh check, e.g. by posting the trigger comment).
+
+Once the requirements are filled in and the label is removed, the Issue returns to the normal queue on the next cycle.
 
 ### Model Selection
 

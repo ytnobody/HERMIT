@@ -18,6 +18,8 @@ import (
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/mcp"
 	"github.com/ytnobody/hermit/internal/permissions"
+	"github.com/ytnobody/hermit/internal/readiness"
+	"github.com/ytnobody/hermit/internal/requirements"
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
@@ -78,12 +80,21 @@ type Config struct {
 	Model struct {
 		Superintendent string `toml:"superintendent"`
 		Engineer       string `toml:"engineer"`
-		// SuperintendentEffort/EngineerEffort configure the Claude Agent
-		// tool's reasoning effort (e.g. low/medium/high/xhigh/max) for the
-		// Superintendent and Engineer roles respectively. Both are optional;
-		// when empty, no effort is specified and the caller's default applies.
+		// Analyst configures the model used for the Analyst (PM) role, which
+		// translates ambiguous human requirements gathered in the standing
+		// requirements-hearing Issue into REQ-ID formatted requirements-doc
+		// updates. Optional; when empty, resolveAnalystModel falls back to
+		// Superintendent for backward compatibility with harness.toml files
+		// written before the Analyst role existed.
+		Analyst string `toml:"analyst"`
+		// SuperintendentEffort/EngineerEffort/AnalystEffort configure the
+		// Claude Agent tool's reasoning effort (e.g. low/medium/high/xhigh/max)
+		// for the Superintendent, Engineer, and Analyst roles respectively.
+		// All are optional; when empty, no effort is specified and the
+		// caller's default applies.
 		SuperintendentEffort string `toml:"superintendent_effort"`
 		EngineerEffort       string `toml:"engineer_effort"`
+		AnalystEffort        string `toml:"analyst_effort"`
 	} `toml:"model"`
 	Notification struct {
 		WebhookURL string `toml:"webhook_url"`
@@ -92,7 +103,35 @@ type Config struct {
 	// Risk configures the risk-evaluation policy (see internal/risk.Config).
 	// Any field left unset falls back to risk.DefaultConfig(). [[repos]]
 	// entries may further override this via their own `risk` sub-table.
-	Risk RiskConfig `toml:"risk"`
+	Risk      RiskConfig `toml:"risk"`
+	Readiness struct {
+		// MinBodyLength is the minimum number of non-whitespace characters an
+		// Issue body must contain to be considered ready for implementation.
+		// Defaults to readiness.DefaultMinBodyLength when <= 0.
+		MinBodyLength int `toml:"min_body_length"`
+		// SkipAcceptanceCriteriaCheck disables the requirement that the Issue
+		// body contain an acceptance-criteria-like section. Defaults to false
+		// (i.e. the check is enabled) so the zero value is safe.
+		SkipAcceptanceCriteriaCheck bool `toml:"skip_acceptance_criteria_check"`
+		// Label is the GitHub label applied to Issues judged not ready, and
+		// used to exclude them from list_issues. Defaults to
+		// readiness.DefaultLabel when empty.
+		Label string `toml:"label"`
+	} `toml:"readiness"`
+	Requirements struct {
+		// Doc is the path (relative to the project root) to the requirements
+		// document parsed for "## REQ-xxx: ..." blocks. Defaults to
+		// "REQUIREMENTS.md" when empty.
+		Doc string `toml:"doc"`
+		// TestCommand is a shell command template used to check whether a
+		// given requirement's test exists and passes. "{req_id}" is
+		// substituted with the requirement's ID, e.g.:
+		//   test_command = "go test ./... -run '^{req_id}' -v"
+		// The template's output must include "=== RUN" markers (i.e.
+		// `go test -v` style output) for every test that matched, so the
+		// reconcile sweep can distinguish "no such test" from "test failed".
+		TestCommand string `toml:"test_command"`
+	} `toml:"requirements"`
 }
 
 // resolveRiskConfig builds the effective default risk.Config (harness.toml's
@@ -113,15 +152,20 @@ func resolveRiskConfig(cfg Config) (risk.Config, map[string]risk.Config) {
 	return def, repoConfigs
 }
 
-// ModelPreset defines superintendent/engineer model combinations.
-// SuperintendentEffort/EngineerEffort are optional reasoning-effort defaults
-// (low/medium/high/xhigh/max) applied for each role; an empty value means no
-// effort is specified and the caller's default applies.
+// ModelPreset defines superintendent/engineer/analyst model combinations.
+// SuperintendentEffort/EngineerEffort/AnalystEffort are optional
+// reasoning-effort defaults (low/medium/high/xhigh/max) applied for each
+// role; an empty value means no effort is specified and the caller's default
+// applies. Analyst defaults to a higher-tier model than Engineer because
+// misinterpreting ambiguous human language into REQ-ID requirements cascades
+// directly into implementation effort downstream (see issue #107).
 type ModelPreset struct {
 	Superintendent       string
 	Engineer             string
+	Analyst              string
 	SuperintendentEffort string
 	EngineerEffort       string
+	AnalystEffort        string
 	Description          string
 }
 
@@ -129,12 +173,15 @@ var modelPresets = map[string]ModelPreset{
 	"claude": {
 		Superintendent: "claude-sonnet-5",
 		Engineer:       "claude-sonnet-5",
-		Description:    "Sonnet for both Superintendent and Engineer (balanced)",
+		Analyst:        "claude-opus-4-8",
+		AnalystEffort:  "high",
+		Description:    "Sonnet for Superintendent/Engineer, Opus for Analyst (balanced)",
 	},
 	"claude-cheap": {
 		Superintendent: "claude-sonnet-5",
 		Engineer:       "claude-haiku-4-5-20251001",
-		Description:    "Sonnet for Superintendent, Haiku for Engineers (cost-optimized)",
+		Analyst:        "claude-sonnet-5",
+		Description:    "Sonnet for Superintendent/Analyst, Haiku for Engineers (cost-optimized)",
 	},
 }
 
@@ -268,11 +315,15 @@ func cmdUse(presetName string) {
 	}
 	modelSection["superintendent"] = preset.Superintendent
 	modelSection["engineer"] = preset.Engineer
+	modelSection["analyst"] = preset.Analyst
 	if preset.SuperintendentEffort != "" {
 		modelSection["superintendent_effort"] = preset.SuperintendentEffort
 	}
 	if preset.EngineerEffort != "" {
 		modelSection["engineer_effort"] = preset.EngineerEffort
+	}
+	if preset.AnalystEffort != "" {
+		modelSection["analyst_effort"] = preset.AnalystEffort
 	}
 	cfg["model"] = modelSection
 
@@ -288,11 +339,15 @@ func cmdUse(presetName string) {
 	fmt.Printf("✓ preset %q applied\n", presetName)
 	fmt.Printf("  superintendent: %s\n", preset.Superintendent)
 	fmt.Printf("  engineer:       %s\n", preset.Engineer)
+	fmt.Printf("  analyst:        %s\n", preset.Analyst)
 	if preset.SuperintendentEffort != "" {
 		fmt.Printf("  superintendent_effort: %s\n", preset.SuperintendentEffort)
 	}
 	if preset.EngineerEffort != "" {
 		fmt.Printf("  engineer_effort:       %s\n", preset.EngineerEffort)
+	}
+	if preset.AnalystEffort != "" {
+		fmt.Printf("  analyst_effort:        %s\n", preset.AnalystEffort)
 	}
 }
 
@@ -323,6 +378,28 @@ func resolveBranchPrefix(cfg Config) string {
 		return "hermit"
 	}
 	return "hermit/" + login
+}
+
+// resolveAnalystModel returns the model configured for the Analyst role.
+// Falls back to the Superintendent model when [model].analyst is unset, so
+// that harness.toml files written before the Analyst role was introduced
+// (issue #107) keep working without modification.
+func resolveAnalystModel(cfg Config) string {
+	if cfg.Model.Analyst != "" {
+		return cfg.Model.Analyst
+	}
+	return cfg.Model.Superintendent
+}
+
+// resolveAnalystEffort returns the reasoning effort configured for the
+// Analyst role. Falls back to the Superintendent's effort when
+// [model].analyst_effort is unset, mirroring resolveAnalystModel's
+// backward-compatibility fallback.
+func resolveAnalystEffort(cfg Config) string {
+	if cfg.Model.AnalystEffort != "" {
+		return cfg.Model.AnalystEffort
+	}
+	return cfg.Model.SuperintendentEffort
 }
 
 func cmdServe() {
@@ -362,17 +439,107 @@ func cmdServe() {
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	prefix := resolveBranchPrefix(cfg)
 
+	runRequirementsSweep(rootDir, cfg, client)
+
 	// Convert []RepoConfig → []gh.RepoConfig for the MCP layer.
 	var repos []gh.RepoConfig
 	for _, r := range cfg.Repos {
 		repos = append(repos, gh.RepoConfig{Owner: r.Owner, Repo: r.Repo, Label: r.Label})
 	}
 
+	readinessCfg := readiness.Config{
+		MinBodyLength:             cfg.Readiness.MinBodyLength,
+		RequireAcceptanceCriteria: !cfg.Readiness.SkipAcceptanceCriteriaCheck,
+		Label:                     cfg.Readiness.Label,
+	}
+
 	defaultRiskCfg, repoRiskCfgs := resolveRiskConfig(cfg)
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, defaultRiskCfg, repoRiskCfgs); err != nil {
+	model := mcp.ModelConfig{
+		Superintendent:       cfg.Model.Superintendent,
+		Engineer:             cfg.Model.Engineer,
+		Analyst:              resolveAnalystModel(cfg),
+		SuperintendentEffort: cfg.Model.SuperintendentEffort,
+		EngineerEffort:       cfg.Model.EngineerEffort,
+		AnalystEffort:        resolveAnalystEffort(cfg),
+	}
+
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model); err != nil {
 		fatal(err.Error())
 	}
+}
+
+// defaultRequirementsDoc is the requirements-document path used when
+// [requirements].doc is not set in harness.toml.
+const defaultRequirementsDoc = "REQUIREMENTS.md"
+
+// runRequirementsSweep runs the requirements reconcile sweep (Issue #106) at
+// `hermit serve` startup: it parses the requirements document for "## REQ-xxx:"
+// blocks, runs each requirement's test via the configured test_command, and
+// opens (deduped) GitHub issues for requirements that are unimplemented,
+// regressed, or whose text changed since the last sweep.
+//
+// This is intentionally best-effort: a project that hasn't adopted the
+// requirements-doc format yet (no doc file, or no test_command configured)
+// simply skips the sweep, and any sweep error is logged rather than fatal —
+// it must never prevent `hermit serve` from starting.
+func runRequirementsSweep(rootDir string, cfg Config, client *gh.Client) {
+	docPath := cfg.Requirements.Doc
+	if docPath == "" {
+		docPath = defaultRequirementsDoc
+	}
+	docPath = filepath.Join(rootDir, docPath)
+
+	data, err := os.ReadFile(docPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("requirements sweep: reading %s: %v", docPath, err)
+		}
+		return
+	}
+	if cfg.Requirements.TestCommand == "" {
+		log.Printf("requirements sweep: %s found but [requirements].test_command is not set in harness.toml; skipping", docPath)
+		return
+	}
+
+	reqs, err := requirements.Parse(string(data))
+	if err != nil {
+		log.Printf("requirements sweep: parsing %s: %v", docPath, err)
+		return
+	}
+	if len(reqs) == 0 {
+		return
+	}
+
+	results, err := requirements.Sweep(reqs, requirements.SweepOptions{
+		Runner: requirements.CommandRunner{Template: cfg.Requirements.TestCommand},
+		Issues: requirements.NewGitHubIssueClient(client),
+		Hashes: requirements.NewFileHashStore(rootDir),
+	})
+	if err != nil {
+		log.Printf("requirements sweep: %v", err)
+		return
+	}
+
+	var satisfied, unimplemented, regressed, skipped, issuesCreated int
+	for _, r := range results {
+		switch r.Status {
+		case requirements.Satisfied:
+			satisfied++
+		case requirements.Unimplemented:
+			unimplemented++
+		case requirements.Regressed:
+			regressed++
+		case requirements.Skipped:
+			skipped++
+		}
+		if r.IssueCreated {
+			issuesCreated++
+			log.Printf("requirements sweep: opened %s issue for %s", r.IssueKind, r.ReqID)
+		}
+	}
+	log.Printf("requirements sweep: %d satisfied, %d unimplemented, %d regressed, %d skipped (manual), %d issue(s) opened",
+		satisfied, unimplemented, regressed, skipped, issuesCreated)
 }
 
 func cmdCleanup() {
@@ -512,6 +679,7 @@ func cmdInit() {
 
 	supEffort := promptDefault(sc, "Superintendent reasoning effort [low/medium/high/xhigh/max] (optional, default: none): ", preset.SuperintendentEffort)
 	engEffort := promptDefault(sc, "Engineer reasoning effort [low/medium/high/xhigh/max] (optional, default: none): ", preset.EngineerEffort)
+	analystEffort := promptDefault(sc, "Analyst reasoning effort [low/medium/high/xhigh/max] (optional, press Enter for preset default): ", preset.AnalystEffort)
 
 	type tmplData struct {
 		Owner                string
@@ -520,8 +688,10 @@ func cmdInit() {
 		MaxEngineers         int
 		SuperintendentModel  string
 		EngineerModel        string
+		AnalystModel         string
 		SuperintendentEffort string
 		EngineerEffort       string
+		AnalystEffort        string
 	}
 	data := tmplData{
 		Owner:                owner,
@@ -530,8 +700,10 @@ func cmdInit() {
 		MaxEngineers:         maxEng,
 		SuperintendentModel:  preset.Superintendent,
 		EngineerModel:        preset.Engineer,
+		AnalystModel:         preset.Analyst,
 		SuperintendentEffort: supEffort,
 		EngineerEffort:       engEffort,
+		AnalystEffort:        analystEffort,
 	}
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
@@ -540,11 +712,15 @@ func cmdInit() {
 		ProjectCodingRules string
 		EngineerModel      string
 		EngineerEffort     string
+		AnalystModel       string
+		AnalystEffort      string
 	}{
 		MaxEngineers:       maxEng,
 		ProjectCodingRules: "Describe your project-specific coding guidelines here.",
 		EngineerModel:      preset.Engineer,
 		EngineerEffort:     engEffort,
+		AnalystModel:       preset.Analyst,
+		AnalystEffort:      analystEffort,
 	})
 
 	// Generate .github/ISSUE_TEMPLATE/hermit-task.md for Issue creation guidance.
@@ -618,6 +794,12 @@ func loadConfig() Config {
 	}
 	if cfg.Agent.LoopInterval <= 0 {
 		cfg.Agent.LoopInterval = 270
+	}
+	if cfg.Readiness.MinBodyLength <= 0 {
+		cfg.Readiness.MinBodyLength = readiness.DefaultMinBodyLength
+	}
+	if cfg.Readiness.Label == "" {
+		cfg.Readiness.Label = readiness.DefaultLabel
 	}
 	return cfg
 }
