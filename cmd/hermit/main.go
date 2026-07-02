@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -325,45 +324,23 @@ func cmdInstall() {
 		fatal("harness.toml not found. Please run `hermit install` from the project root.")
 	}
 
-	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
-
-	data, err := os.ReadFile(settingsPath)
-	if err != nil && !os.IsNotExist(err) {
-		fatal(err.Error())
+	// Register hermit as a project-local MCP server through the Claude Code
+	// CLI itself. Claude Code does NOT read MCP server definitions from
+	// ~/.claude/settings.json — only from ~/.claude.json (managed via
+	// `claude mcp add`) or a project .mcp.json file, so registration must go
+	// through the officially supported `claude mcp add` command rather than
+	// hand-writing Claude Code's internal config format.
+	addArgs := []string{
+		"mcp", "add", "hermit",
+		"-s", "local",
+		"-e", "GITHUB_TOKEN=${GITHUB_TOKEN}",
+		"-e", "HERMIT_PROJECT_DIR=" + cwd,
+		"--", execPath, "serve",
 	}
-
-	var settings map[string]any
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &settings); err != nil {
-			fatal("failed to parse settings.json: " + err.Error())
-		}
-	} else {
-		settings = make(map[string]any)
+	if out, err := exec.Command("claude", addArgs...).CombinedOutput(); err != nil {
+		fatal("failed to register MCP server via `claude mcp add`: " + err.Error() + "\n" + string(out))
 	}
-
-	mcpServers, _ := settings["mcpServers"].(map[string]any)
-	if mcpServers == nil {
-		mcpServers = make(map[string]any)
-	}
-	mcpServers["hermit"] = map[string]any{
-		"command": execPath,
-		"args":    []string{"serve"},
-		"cwd":     cwd,
-		"env": map[string]string{
-			"GITHUB_TOKEN":      "${GITHUB_TOKEN}",
-			"HERMIT_PROJECT_DIR": cwd,
-		},
-	}
-	settings["mcpServers"] = mcpServers
-
-	b, _ := json.MarshalIndent(settings, "", "  ") // map[string]any is always serialisable
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
-		fatal(err.Error())
-	}
-	if err := os.WriteFile(settingsPath, append(b, '\n'), 0o644); err != nil {
-		fatal(err.Error())
-	}
-	fmt.Println("✓ HERMIT MCP server registered in", settingsPath)
+	fmt.Println("✓ HERMIT MCP server registered with Claude Code (run `claude mcp list` to verify)")
 
 	// Install slash commands into the project's .claude/commands/ directory.
 	commandsDir := filepath.Join(cwd, ".claude", "commands")

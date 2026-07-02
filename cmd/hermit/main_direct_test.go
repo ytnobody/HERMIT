@@ -80,11 +80,12 @@ func TestMainSwitch_Install(t *testing.T) {
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	_, recordPath := writeFakeClaude(t)
 
 	directMain(t, []string{"hermit", "install"})
 
-	if _, err := os.Stat(filepath.Join(homeDir, ".claude", "settings.json")); err != nil {
-		t.Error("settings.json not created via main install")
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Error("claude mcp add was not invoked via main install")
 	}
 }
 

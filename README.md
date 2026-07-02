@@ -101,7 +101,7 @@ Edit the "Coding Guidelines" section in `CLAUDE.md` to match your project.
 
 ## Usage
 
-Since `hermit install` registers it as an MCP server in `~/.claude/settings.json`, **Claude Code automatically starts `hermit serve` on launch**. No need to start it manually in another terminal.
+Since `hermit install` registers it as an MCP server via `claude mcp add` (project-local scope), **Claude Code automatically starts `hermit serve` on launch**. No need to start it manually in another terminal.
 
 ```
 Claude Code starts
@@ -285,7 +285,7 @@ When the score drops below 70, a lesson is generated and saved to `.hermit/lesso
 
 ```
 hermit serve     # Start the MCP server (stdio) — Claude Code auto-starts this, manual execution normally not needed
-hermit install   # Register MCP server in ~/.claude/settings.json and install slash commands
+hermit install   # Register MCP server via `claude mcp add` and install slash commands
 hermit init      # Initialize a project (generate harness.toml, CLAUDE.md, issue template, settings)
 hermit pause     # Pause autonomous operation
 hermit resume    # Resume autonomous operation

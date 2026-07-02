@@ -181,6 +181,23 @@ func io_copy_discard(r *os.File) {
 
 // --- cmdInstall in-process ---
 
+// writeFakeClaude creates a fake `claude` executable that records the
+// arguments it is invoked with to recordPath, then puts it on PATH ahead of
+// any real `claude` binary. cmdInstall shells out to `claude mcp add` for MCP
+// server registration, so tests exercise that call through this stand-in
+// rather than depending on a real Claude Code installation.
+func writeFakeClaude(t *testing.T) (binDir, recordPath string) {
+	t.Helper()
+	binDir = t.TempDir()
+	recordPath = filepath.Join(binDir, "record.txt")
+	script := "#!/bin/sh\necho \"$@\" > " + recordPath + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	return binDir, recordPath
+}
+
 // TestCmdInstall_Valid exercises the full happy path with HOME redirected to a
 // temp directory so nothing is written to the real user's home.
 func TestCmdInstall_Valid(t *testing.T) {
@@ -194,6 +211,7 @@ func TestCmdInstall_Valid(t *testing.T) {
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	_, recordPath := writeFakeClaude(t)
 
 	// Capture stdout to suppress install messages.
 	pr, pw, _ := os.Pipe()
@@ -205,16 +223,15 @@ func TestCmdInstall_Valid(t *testing.T) {
 	var buf bytes.Buffer
 	buf.ReadFrom(pr)
 
-	settingsPath := filepath.Join(homeDir, ".claude", "settings.json")
-	data, err := os.ReadFile(settingsPath)
+	recorded, err := os.ReadFile(recordPath)
 	if err != nil {
-		t.Fatalf("settings.json not written: %v", err)
+		t.Fatalf("claude mcp add was not invoked: %v", err)
 	}
-	if !strings.Contains(string(data), "hermit") {
-		t.Errorf("settings.json missing hermit entry: %s", data)
+	if !strings.Contains(string(recorded), "hermit") {
+		t.Errorf("claude mcp add args missing hermit: %s", recorded)
 	}
-	if !strings.Contains(string(data), "HERMIT_PROJECT_DIR") {
-		t.Errorf("settings.json missing HERMIT_PROJECT_DIR: %s", data)
+	if !strings.Contains(string(recorded), "HERMIT_PROJECT_DIR") {
+		t.Errorf("claude mcp add args missing HERMIT_PROJECT_DIR: %s", recorded)
 	}
 }
 
@@ -239,42 +256,6 @@ func TestCmdInstall_NoHarness(t *testing.T) {
 	t.Fatalf("expected non-zero exit, got: %v", err)
 }
 
-// TestCmdInstall_ExistingSettings verifies that install merges into an existing
-// settings.json rather than overwriting it.
-func TestCmdInstall_ExistingSettings(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(minimalHarnessTOML), 0o644)
-	prev, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(prev)
-
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	// Write an existing settings.json with a pre-existing field.
-	claudeDir := filepath.Join(homeDir, ".claude")
-	os.MkdirAll(claudeDir, 0o755)
-	existing := `{"model":"sonnet"}`
-	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(existing), 0o644)
-
-	pr, pw, _ := os.Pipe()
-	origOut := os.Stdout
-	os.Stdout = pw
-	cmdInstall()
-	pw.Close()
-	os.Stdout = origOut
-	var buf bytes.Buffer
-	buf.ReadFrom(pr)
-
-	data, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
-	if !strings.Contains(string(data), "model") {
-		t.Error("existing settings fields should be preserved")
-	}
-	if !strings.Contains(string(data), "hermit") {
-		t.Error("hermit entry should be added")
-	}
-}
-
 // TestCmdInstall_LocalBinMkdirWarn verifies that cmdInstall prints a warn and
 // continues when os.MkdirAll for ~/.local/bin fails (e.g. .local exists as a file).
 func TestCmdInstall_LocalBinMkdirWarn(t *testing.T) {
@@ -286,6 +267,7 @@ func TestCmdInstall_LocalBinMkdirWarn(t *testing.T) {
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	writeFakeClaude(t)
 
 	// Create .local as a regular file so MkdirAll(".local/bin") fails.
 	os.WriteFile(filepath.Join(homeDir, ".local"), []byte("file"), 0o644)
@@ -326,6 +308,7 @@ func TestCmdInstall_SymlinkWarn(t *testing.T) {
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	writeFakeClaude(t)
 
 	// Create ~/.local/bin/hermit as a non-empty directory so:
 	//   os.Remove(linkPath) fails (non-empty directory)
@@ -357,31 +340,6 @@ func TestCmdInstall_SymlinkWarn(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "warn:") {
 		t.Errorf("expected symlink warn on stderr, got: %q", errBuf.String())
 	}
-}
-
-// TestCmdInstall_BadSettings verifies fatal when settings.json contains invalid JSON.
-func TestCmdInstall_BadSettings(t *testing.T) {
-	if os.Getenv("TEST_INSTALL_BADSETTINGS") != "" {
-		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(minimalHarnessTOML), 0o644)
-		prev, _ := os.Getwd()
-		os.Chdir(dir)
-		defer os.Chdir(prev)
-		homeDir := t.TempDir()
-		os.Setenv("HOME", homeDir)
-		claudeDir := filepath.Join(homeDir, ".claude")
-		os.MkdirAll(claudeDir, 0o755)
-		os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte("not json {{{"), 0o644)
-		cmdInstall()
-		return
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=TestCmdInstall_BadSettings", "-test.v")
-	cmd.Env = append(os.Environ(), "TEST_INSTALL_BADSETTINGS=1")
-	err := cmd.Run()
-	if e, ok := err.(*exec.ExitError); ok && !e.Success() {
-		return
-	}
-	t.Fatalf("expected non-zero exit, got: %v", err)
 }
 
 // --- cmdInit in-process ---
@@ -573,6 +531,7 @@ func TestMain_Install(t *testing.T) {
 		defer os.Chdir(prev)
 		homeDir := t.TempDir()
 		os.Setenv("HOME", homeDir)
+		writeFakeClaude(t)
 		os.Args = []string{"hermit", "install"}
 		main()
 		return
