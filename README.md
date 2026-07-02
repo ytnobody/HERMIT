@@ -204,8 +204,8 @@ language        = "en"      # "ja" | "en"
 # trigger_comment = "/hermit"            # only process Issues that have this comment
 
 [model]
-superintendent = "claude-sonnet-4-5"   # model used for the Superintendent role
-engineer       = "claude-sonnet-4-5"   # model used for Engineer roles
+superintendent = "claude-sonnet-5"   # model used for the Superintendent role
+engineer       = "claude-sonnet-5"   # model used for Engineer roles
 
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook

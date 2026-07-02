@@ -561,3 +561,51 @@ func TestMain_Status(t *testing.T) {
 		t.Fatalf("expected zero exit for status: %v", err)
 	}
 }
+
+// --- modelPresets ---
+
+// TestModelPresets_NoStaleModelIDs guards against regressing to retired
+// Claude model IDs (e.g. "claude-sonnet-4-5") in the built-in presets. See
+// https://github.com/ytnobody/HERMIT/issues/94.
+func TestModelPresets_NoStaleModelIDs(t *testing.T) {
+	staleIDs := []string{"claude-sonnet-4-5", "claude-haiku-4-5-latest"}
+
+	for name, preset := range modelPresets {
+		for _, stale := range staleIDs {
+			if preset.Superintendent == stale {
+				t.Errorf("preset %q: Superintendent uses stale model ID %q", name, stale)
+			}
+			if preset.Engineer == stale {
+				t.Errorf("preset %q: Engineer uses stale model ID %q", name, stale)
+			}
+		}
+	}
+}
+
+// TestModelPresets_ExpectedValues locks in the current model IDs for the
+// built-in presets so future changes are intentional and reviewed.
+func TestModelPresets_ExpectedValues(t *testing.T) {
+	want := map[string]ModelPreset{
+		"claude": {
+			Superintendent: "claude-sonnet-5",
+			Engineer:       "claude-sonnet-5",
+		},
+		"claude-cheap": {
+			Superintendent: "claude-sonnet-5",
+			Engineer:       "claude-haiku-4-5-20251001",
+		},
+	}
+
+	for name, wantPreset := range want {
+		gotPreset, ok := modelPresets[name]
+		if !ok {
+			t.Fatalf("preset %q not found in modelPresets", name)
+		}
+		if gotPreset.Superintendent != wantPreset.Superintendent {
+			t.Errorf("preset %q: Superintendent = %q, want %q", name, gotPreset.Superintendent, wantPreset.Superintendent)
+		}
+		if gotPreset.Engineer != wantPreset.Engineer {
+			t.Errorf("preset %q: Engineer = %q, want %q", name, gotPreset.Engineer, wantPreset.Engineer)
+		}
+	}
+}

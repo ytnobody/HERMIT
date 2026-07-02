@@ -66,13 +66,13 @@ type ModelPreset struct {
 
 var modelPresets = map[string]ModelPreset{
 	"claude": {
-		Superintendent: "claude-sonnet-4-5",
-		Engineer:       "claude-sonnet-4-5",
+		Superintendent: "claude-sonnet-5",
+		Engineer:       "claude-sonnet-5",
 		Description:    "Sonnet for both Superintendent and Engineer (balanced)",
 	},
 	"claude-cheap": {
-		Superintendent: "claude-sonnet-4-5",
-		Engineer:       "claude-haiku-4-5",
+		Superintendent: "claude-sonnet-5",
+		Engineer:       "claude-haiku-4-5-20251001",
 		Description:    "Sonnet for Superintendent, Haiku for Engineers (cost-optimized)",
 	},
 }
