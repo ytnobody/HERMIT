@@ -57,6 +57,26 @@ func TestMainSwitch_Resume(t *testing.T) {
 	}
 }
 
+func TestMainSwitch_Quit(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	out := directMain(t, []string{"hermit", "quit"})
+	if !strings.Contains(out, "quit") {
+		t.Errorf("expected quit message, got %q", out)
+	}
+	if _, err := os.Stat(quitFile); os.IsNotExist(err) {
+		t.Error(".hermit-quit not created by main quit")
+	}
+
+	statusOut := directMain(t, []string{"hermit", "status"})
+	if !strings.Contains(statusOut, "quit requested") {
+		t.Errorf("expected 'quit requested' status, got %q", statusOut)
+	}
+}
+
 func TestMainSwitch_Status(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := os.Getwd()
@@ -80,11 +100,12 @@ func TestMainSwitch_Install(t *testing.T) {
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	_, recordPath := writeFakeClaude(t)
 
 	directMain(t, []string{"hermit", "install"})
 
-	if _, err := os.Stat(filepath.Join(homeDir, ".claude", "settings.json")); err != nil {
-		t.Error("settings.json not created via main install")
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Error("claude mcp add was not invoked via main install")
 	}
 }
 

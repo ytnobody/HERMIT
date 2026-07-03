@@ -127,8 +127,11 @@ func TestCmdInstallFatal_HarnessNotFound(t *testing.T) {
 	}
 }
 
-func TestCmdInstallFatal_ReadFileError(t *testing.T) {
-	// Make settings.json a directory → os.ReadFile returns EISDIR (not IsNotExist) → fatal.
+// TestCmdInstallFatal_ClaudeMcpAddError verifies that cmdInstall fatals when
+// `claude mcp add` fails (e.g. Claude Code CLI missing or erroring), since MCP
+// server registration must go through that command rather than hand-writing
+// Claude Code's config files.
+func TestCmdInstallFatal_ClaudeMcpAddError(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(minimalHarnessTOML), 0o644)
 	prev, _ := os.Getwd()
@@ -137,71 +140,16 @@ func TestCmdInstallFatal_ReadFileError(t *testing.T) {
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-	os.MkdirAll(filepath.Join(homeDir, ".claude", "settings.json"), 0o755)
+
+	// Fake `claude` binary on PATH that always fails.
+	fakeBinDir := t.TempDir()
+	script := "#!/bin/sh\necho 'boom' >&2\nexit 1\n"
+	os.WriteFile(filepath.Join(fakeBinDir, "claude"), []byte(script), 0o755)
+	t.Setenv("PATH", fakeBinDir+":"+os.Getenv("PATH"))
 
 	msg := catchFatal(t, func() { cmdInstall() })
-	if msg == "" {
-		t.Error("expected fatal for ReadFile EISDIR, got none")
-	}
-}
-
-func TestCmdInstallFatal_UnmarshalError(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(minimalHarnessTOML), 0o644)
-	prev, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(prev)
-
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	claudeDir := filepath.Join(homeDir, ".claude")
-	os.MkdirAll(claudeDir, 0o755)
-	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte("not json {{{"), 0o644)
-
-	msg := catchFatal(t, func() { cmdInstall() })
-	if !strings.Contains(msg, "settings.json") {
-		t.Errorf("expected settings.json parse fatal, got: %q", msg)
-	}
-}
-
-func TestCmdInstallFatal_MkdirSettingsError(t *testing.T) {
-	// Make homeDir read-only so MkdirAll(".claude") fails with EACCES.
-	// os.ReadFile(".claude/settings.json") gets ENOENT (dir missing) = IsNotExist,
-	// so we skip the ReadFile fatal and reach MkdirAll → fatal.
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(minimalHarnessTOML), 0o644)
-	prev, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(prev)
-
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	os.Chmod(homeDir, 0o555) // read-only → can't create .claude inside
-	defer os.Chmod(homeDir, 0o755)
-
-	msg := catchFatal(t, func() { cmdInstall() })
-	if msg == "" {
-		t.Log("MkdirAll settings fatal not triggered (possibly running as root); skip")
-	}
-}
-
-func TestCmdInstallFatal_WriteFileError(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(minimalHarnessTOML), 0o644)
-	prev, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(prev)
-
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-	claudeDir := filepath.Join(homeDir, ".claude")
-	os.MkdirAll(claudeDir, 0o755)
-	os.Chmod(claudeDir, 0o555)
-	defer os.Chmod(claudeDir, 0o755)
-
-	msg := catchFatal(t, func() { cmdInstall() })
-	if msg == "" {
-		t.Log("WriteFile fatal not triggered (possibly running as root); skip")
+	if !strings.Contains(msg, "claude mcp add") {
+		t.Errorf("expected claude mcp add fatal, got: %q", msg)
 	}
 }
 
@@ -278,6 +226,20 @@ func TestCmdPauseFatal_WriteError(t *testing.T) {
 
 	// May not fail if running as root — that's acceptable.
 	_ = catchFatal(t, func() { cmdPause() })
+}
+
+// --- cmdQuit fatal path (read-only dir) ---
+
+func TestCmdQuitFatal_WriteError(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0o555)
+	defer os.Chmod(dir, 0o755)
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	// May not fail if running as root — that's acceptable.
+	_ = catchFatal(t, func() { cmdQuit() })
 }
 
 // --- cmdResume fatal path (non-empty directory) ---

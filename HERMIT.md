@@ -49,7 +49,6 @@ MADFLOW has an "outside-in" architecture where a Go binary launches and manages 
                               │  create_worktree             │
                               │  evaluate_risk               │
                               │  merge_pr                    │
-                              │  close_worktree              │
                               └──────────────────────────────┘
                                       │           │
                                GitHub API      Git CLI
@@ -145,26 +144,14 @@ Evaluation criteria:
 
 ### `merge_pr`
 
-Merges the PR after CI passes. Rejects HIGH risk and posts a comment.
+Merges the PR after CI passes. Rejects HIGH risk and posts a comment. When `worktree_path` and `branch` are provided, removes the worktree and branch after a successful merge.
 
 ```json
 // Input
-{ "pr_number": 123 }
+{ "pr_number": 123, "worktree_path": "/path/to/worktree", "branch": "hermit/issue-42" }
 
 // Output
 { "merged": true } | { "merged": false, "reason": "HIGH risk / CI failing / ..." }
-```
-
-### `close_worktree`
-
-Removes the worktree and branch after a merge is complete.
-
-```json
-// Input
-{ "worktree_path": "/path/to/worktree", "branch": "hermit/issue-42" }
-
-// Output
-{ "success": true }
 ```
 
 ### `add_issue_comment`
@@ -287,10 +274,9 @@ Repeat the following cycle.
    - Pass Issue number, title, body, and worktree path to each Engineer
 5. Wait for all Engineers to complete
 6. If a PR has been created, run `evaluate_risk` for risk evaluation
-   - LOW/MEDIUM: run `merge_pr`
+   - LOW/MEDIUM: run `merge_pr` with `worktree_path`/`branch` so the worktree is cleaned up automatically
    - HIGH: post a comment on the PR and skip
-7. Clean up worktrees with `close_worktree`
-8. Return to step 1
+7. Return to step 1
 ```
 
 ### Engineer Section

@@ -12,7 +12,16 @@ import (
 type checkResult struct {
 	name   string
 	passed bool
+	warn   bool
 	detail string
+}
+
+// isSnapGh reports whether the resolved gh executable path indicates a
+// snap-confined install (e.g. /snap/bin/gh). Snap's confinement gives gh a
+// private /tmp, so it cannot read files under the host's /tmp even though
+// the shell (and other tools) can read them just fine.
+func isSnapGh(path string) bool {
+	return strings.Contains(path, "/snap/bin/")
 }
 
 func runChecks() []checkResult {
@@ -27,10 +36,8 @@ func runChecks() []checkResult {
 
 	// Check: gh CLI is installed and authenticated
 	ghAuthOut, ghAuthErr := exec.Command("gh", "auth", "status").CombinedOutput()
-	ghInstalled := true
-	if _, lookErr := exec.LookPath("gh"); lookErr != nil {
-		ghInstalled = false
-	}
+	ghPath, ghLookErr := exec.LookPath("gh")
+	ghInstalled := ghLookErr == nil
 	ghAuthed := ghInstalled && ghAuthErr == nil
 	detail := ""
 	if !ghInstalled {
@@ -42,6 +49,29 @@ func runChecks() []checkResult {
 		name:   "gh CLI is installed and authenticated",
 		passed: ghAuthed,
 		detail: detail,
+	})
+
+	// Check: gh CLI installation method. Snap-packaged gh (e.g. /snap/bin/gh)
+	// runs under snap confinement with a private /tmp, so it cannot read
+	// files under the host's /tmp even though the shell can. This trips up
+	// patterns like `gh issue edit N --body-file /tmp/....md`. This is a
+	// warning, not a failure: it does not affect overall doctor pass/fail.
+	snapGh := ghInstalled && isSnapGh(ghPath)
+	snapDetail := ""
+	if snapGh {
+		snapDetail = fmt.Sprintf(
+			"gh is a snap install (%s); snap confinement means it cannot read files under the host's /tmp, "+
+				"so passing a /tmp path via --body-file (etc.) can fail with \"open /tmp/...: no such file or directory\". "+
+				"Use stdin instead (e.g. `gh issue edit N --body-file - < /path/to/file`), keep temp files under the project directory, "+
+				"or switch to the apt/official binary build of gh: https://github.com/cli/cli/blob/trunk/docs/install_linux.md",
+			ghPath,
+		)
+	}
+	results = append(results, checkResult{
+		name:   "gh CLI installation method (snap /tmp confinement)",
+		passed: true,
+		warn:   snapGh,
+		detail: snapDetail,
 	})
 
 	// Check: GITHUB_TOKEN is set or obtainable via gh auth token
@@ -109,6 +139,9 @@ func cmdDoctor() {
 	allPassed := true
 	for _, r := range results {
 		mark := "✓"
+		if r.warn {
+			mark = "⚠"
+		}
 		if !r.passed {
 			mark = "✗"
 			allPassed = false

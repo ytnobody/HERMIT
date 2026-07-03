@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ytnobody/hermit/internal/risk"
 )
 
 // --- loadConfig ---
@@ -34,6 +36,118 @@ language = "en"
 	}
 	if cfg.Agent.MaxEngineers != 2 || cfg.Agent.Language != "en" {
 		t.Errorf("unexpected agent config: %+v", cfg.Agent)
+	}
+}
+
+// TestLoadConfig_ModelEffort verifies that superintendent_effort/engineer_effort
+// under [model] are parsed into Config.Model.
+func TestLoadConfig_ModelEffort(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[model]
+superintendent = "claude-sonnet-4-5"
+engineer       = "claude-haiku-4-5"
+superintendent_effort = "high"
+engineer_effort       = "medium"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Model.Superintendent != "claude-sonnet-4-5" || cfg.Model.Engineer != "claude-haiku-4-5" {
+		t.Errorf("unexpected model config: %+v", cfg.Model)
+	}
+	if cfg.Model.SuperintendentEffort != "high" {
+		t.Errorf("expected superintendent_effort=high, got %q", cfg.Model.SuperintendentEffort)
+	}
+	if cfg.Model.EngineerEffort != "medium" {
+		t.Errorf("expected engineer_effort=medium, got %q", cfg.Model.EngineerEffort)
+	}
+}
+
+// TestLoadConfig_AnalystModel verifies that [model].analyst/analyst_effort
+// are parsed into Config.Model (issue #107).
+func TestLoadConfig_AnalystModel(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[model]
+superintendent = "claude-sonnet-5"
+engineer       = "claude-sonnet-5"
+analyst        = "claude-opus-4-8"
+analyst_effort = "high"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Model.Analyst != "claude-opus-4-8" {
+		t.Errorf("expected analyst=claude-opus-4-8, got %q", cfg.Model.Analyst)
+	}
+	if cfg.Model.AnalystEffort != "high" {
+		t.Errorf("expected analyst_effort=high, got %q", cfg.Model.AnalystEffort)
+	}
+}
+
+// TestLoadConfig_AnalystModel_OmittedDefaultsEmpty verifies that a
+// harness.toml written before the Analyst role existed (issue #107) parses
+// without error, leaving Config.Model.Analyst/AnalystEffort as the empty
+// string (the caller is expected to apply resolveAnalystModel/
+// resolveAnalystEffort for backward-compatible fallback).
+func TestLoadConfig_AnalystModel_OmittedDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[model]
+superintendent = "claude-sonnet-5"
+engineer       = "claude-sonnet-5"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Model.Analyst != "" || cfg.Model.AnalystEffort != "" {
+		t.Errorf("expected empty analyst fields, got: %+v", cfg.Model)
+	}
+}
+
+// TestLoadConfig_ModelEffort_OmittedDefaultsEmpty verifies that omitting the
+// effort keys leaves them as the empty string (no effort specified).
+func TestLoadConfig_ModelEffort_OmittedDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+[model]
+superintendent = "claude-sonnet-4-5"
+engineer       = "claude-sonnet-4-5"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if cfg.Model.SuperintendentEffort != "" || cfg.Model.EngineerEffort != "" {
+		t.Errorf("expected empty effort fields, got: %+v", cfg.Model)
 	}
 }
 
@@ -145,6 +259,205 @@ loop_interval = 60
 	cfg := loadConfig()
 	if cfg.Agent.LoopInterval != 60 {
 		t.Errorf("expected LoopInterval 60, got %d", cfg.Agent.LoopInterval)
+	}
+}
+
+// --- [risk] section / resolveRiskConfig ---
+
+// TestLoadConfig_RiskSection_Custom verifies that harness.toml's [risk]
+// section is parsed into cfg.Risk and that resolveRiskConfig applies it on
+// top of the hardcoded default policy.
+func TestLoadConfig_RiskSection_Custom(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+
+[risk]
+high_paths            = ["src/", "Cargo.toml"]
+medium_paths          = ["lib/"]
+high_file_threshold   = 15
+high_line_threshold   = 300
+medium_file_threshold = 5
+medium_line_threshold = 100
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if len(cfg.Risk.HighPaths) != 2 || cfg.Risk.HighPaths[0] != "src/" || cfg.Risk.HighPaths[1] != "Cargo.toml" {
+		t.Errorf("unexpected Risk.HighPaths: %+v", cfg.Risk.HighPaths)
+	}
+	if len(cfg.Risk.MediumPaths) != 1 || cfg.Risk.MediumPaths[0] != "lib/" {
+		t.Errorf("unexpected Risk.MediumPaths: %+v", cfg.Risk.MediumPaths)
+	}
+	if cfg.Risk.HighFileThreshold != 15 || cfg.Risk.HighLineThreshold != 300 {
+		t.Errorf("unexpected Risk high thresholds: %+v", cfg.Risk)
+	}
+	if cfg.Risk.MediumFileThreshold != 5 || cfg.Risk.MediumLineThreshold != 100 {
+		t.Errorf("unexpected Risk medium thresholds: %+v", cfg.Risk)
+	}
+
+	def, repoCfgs := resolveRiskConfig(cfg)
+	if repoCfgs != nil {
+		t.Errorf("expected no per-repo overrides in single-repo mode, got %+v", repoCfgs)
+	}
+	if def.HighFileThreshold != 15 || def.HighLineThreshold != 300 {
+		t.Errorf("resolveRiskConfig() default high thresholds = %+v, want overridden values", def)
+	}
+	if def.MediumFileThreshold != 5 || def.MediumLineThreshold != 100 {
+		t.Errorf("resolveRiskConfig() default medium thresholds = %+v, want overridden values", def)
+	}
+	if len(def.HighPaths) != 2 || def.HighPaths[0] != "src/" {
+		t.Errorf("resolveRiskConfig() default HighPaths = %+v, want overridden value", def.HighPaths)
+	}
+}
+
+// TestLoadConfig_RiskSection_Omitted verifies that when [risk] is entirely
+// absent from harness.toml, resolveRiskConfig falls back to the exact
+// hardcoded legacy defaults (risk.DefaultConfig()) — i.e. omitting the
+// section is fully backward compatible.
+func TestLoadConfig_RiskSection_Omitted(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	def, repoCfgs := resolveRiskConfig(cfg)
+	if repoCfgs != nil {
+		t.Errorf("expected no per-repo overrides, got %+v", repoCfgs)
+	}
+	want := risk.DefaultConfig()
+	if def.HighFileThreshold != want.HighFileThreshold || def.HighLineThreshold != want.HighLineThreshold {
+		t.Errorf("default high thresholds = %+v, want legacy defaults %+v", def, want)
+	}
+	if def.MediumFileThreshold != want.MediumFileThreshold || def.MediumLineThreshold != want.MediumLineThreshold {
+		t.Errorf("default medium thresholds = %+v, want legacy defaults %+v", def, want)
+	}
+	if len(def.HighPaths) != len(want.HighPaths) {
+		t.Fatalf("HighPaths = %+v, want %+v", def.HighPaths, want.HighPaths)
+	}
+	for i := range want.HighPaths {
+		if def.HighPaths[i] != want.HighPaths[i] {
+			t.Errorf("HighPaths[%d] = %q, want %q", i, def.HighPaths[i], want.HighPaths[i])
+		}
+	}
+	if len(def.MediumPaths) != len(want.MediumPaths) || def.MediumPaths[0] != want.MediumPaths[0] {
+		t.Errorf("MediumPaths = %+v, want %+v", def.MediumPaths, want.MediumPaths)
+	}
+}
+
+// TestLoadConfig_RiskSection_PartialOverride verifies that specifying only
+// some [risk] fields leaves the rest at the hardcoded default (partial
+// override / backward-compatible merge behavior).
+func TestLoadConfig_RiskSection_PartialOverride(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+
+[risk]
+high_file_threshold = 3
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	def, _ := resolveRiskConfig(cfg)
+	want := risk.DefaultConfig()
+	if def.HighFileThreshold != 3 {
+		t.Errorf("HighFileThreshold = %d, want 3", def.HighFileThreshold)
+	}
+	if def.HighLineThreshold != want.HighLineThreshold {
+		t.Errorf("HighLineThreshold = %d, want default %d", def.HighLineThreshold, want.HighLineThreshold)
+	}
+	if def.MediumFileThreshold != want.MediumFileThreshold {
+		t.Errorf("MediumFileThreshold = %d, want default %d", def.MediumFileThreshold, want.MediumFileThreshold)
+	}
+	if len(def.HighPaths) != len(want.HighPaths) {
+		t.Errorf("HighPaths = %+v, want default %+v", def.HighPaths, want.HighPaths)
+	}
+}
+
+// TestLoadConfig_RiskSection_PerRepoOverride verifies that in multi-repo
+// mode, a [[repos]] entry's own [repos.risk] sub-table overrides the
+// top-level [risk] section for that repo only, while other repos and the
+// unqualified default fall back to the global config.
+func TestLoadConfig_RiskSection_PerRepoOverride(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "myorg"
+repo  = "primary"
+
+[risk]
+high_file_threshold = 15
+
+[[repos]]
+owner = "myorg"
+repo  = "frontend"
+label = "hermit"
+
+[repos.risk]
+high_file_threshold = 3
+high_paths          = ["src/"]
+
+[[repos]]
+owner = "myorg"
+repo  = "backend"
+label = "hermit"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	def, repoCfgs := resolveRiskConfig(cfg)
+
+	if def.HighFileThreshold != 15 {
+		t.Errorf("global default HighFileThreshold = %d, want 15", def.HighFileThreshold)
+	}
+
+	frontend, ok := repoCfgs["myorg/frontend"]
+	if !ok {
+		t.Fatalf("expected an override for myorg/frontend, got %+v", repoCfgs)
+	}
+	if frontend.HighFileThreshold != 3 {
+		t.Errorf("frontend HighFileThreshold = %d, want 3 (repo override)", frontend.HighFileThreshold)
+	}
+	if len(frontend.HighPaths) != 1 || frontend.HighPaths[0] != "src/" {
+		t.Errorf("frontend HighPaths = %+v, want [src/]", frontend.HighPaths)
+	}
+	// Fields not overridden at the repo level should fall back to the
+	// resolved global config, not the hardcoded legacy default.
+	if frontend.HighLineThreshold != def.HighLineThreshold {
+		t.Errorf("frontend HighLineThreshold = %d, want inherited global value %d", frontend.HighLineThreshold, def.HighLineThreshold)
+	}
+
+	backend, ok := repoCfgs["myorg/backend"]
+	if !ok {
+		t.Fatalf("expected an entry for myorg/backend, got %+v", repoCfgs)
+	}
+	if backend.HighFileThreshold != 15 {
+		t.Errorf("backend HighFileThreshold = %d, want inherited global value 15 (no repo override)", backend.HighFileThreshold)
 	}
 }
 
@@ -289,6 +602,56 @@ func TestCmdPauseResumeStatus(t *testing.T) {
 	}
 }
 
+func TestCmdQuitStatus(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	// Initially running
+	var buf bytes.Buffer
+	origOut := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	cmdStatus()
+	w.Close()
+	os.Stdout = origOut
+	buf.ReadFrom(r)
+	if !strings.Contains(buf.String(), "running") {
+		t.Errorf("expected 'running', got %q", buf.String())
+	}
+
+	// Quit
+	buf.Reset()
+	r, w, _ = os.Pipe()
+	os.Stdout = w
+	cmdQuit()
+	w.Close()
+	os.Stdout = origOut
+	buf.ReadFrom(r)
+	if _, err := os.Stat(quitFile); os.IsNotExist(err) {
+		t.Error(".hermit-quit should exist after quit")
+	}
+	if !strings.Contains(buf.String(), "quit") {
+		t.Errorf("expected quit confirmation message, got %q", buf.String())
+	}
+
+	// Status should report quit requested, taking priority over pause
+	if err := os.WriteFile(pauseFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buf.Reset()
+	r, w, _ = os.Pipe()
+	os.Stdout = w
+	cmdStatus()
+	w.Close()
+	os.Stdout = origOut
+	buf.ReadFrom(r)
+	if !strings.Contains(buf.String(), "quit requested") {
+		t.Errorf("expected 'quit requested' status even with pause file present, got %q", buf.String())
+	}
+}
+
 func TestCmdPause_WriteError(t *testing.T) {
 	if os.Getenv("TEST_PAUSE_ERR") != "" {
 		// Change to a read-only dir to force write failure
@@ -365,16 +728,21 @@ func TestWriteTemplate_Valid(t *testing.T) {
 	defer os.Chdir(prev)
 
 	type data struct {
-		Owner               string
-		Repo                string
-		Language            string
-		MaxEngineers        int
-		SuperintendentModel string
-		EngineerModel       string
+		Owner                string
+		Repo                 string
+		Language             string
+		MaxEngineers         int
+		SuperintendentModel  string
+		EngineerModel        string
+		AnalystModel         string
+		SuperintendentEffort string
+		EngineerEffort       string
+		AnalystEffort        string
 	}
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data{
 		Owner: "owner", Repo: "repo", Language: "ja", MaxEngineers: 4,
-		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5",
+		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5", AnalystModel: "claude-opus-4-8",
+		SuperintendentEffort: "high", EngineerEffort: "medium", AnalystEffort: "high",
 	})
 	content, err := os.ReadFile(filepath.Join(dir, "harness.toml"))
 	if err != nil {
@@ -382,6 +750,52 @@ func TestWriteTemplate_Valid(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "owner") {
 		t.Errorf("harness.toml missing owner: %s", content)
+	}
+	if !strings.Contains(string(content), `superintendent_effort = "high"`) {
+		t.Errorf("harness.toml missing superintendent_effort: %s", content)
+	}
+	if !strings.Contains(string(content), `analyst        = "claude-opus-4-8"`) {
+		t.Errorf("harness.toml missing analyst model: %s", content)
+	}
+	if !strings.Contains(string(content), `analyst_effort         = "high"`) {
+		t.Errorf("harness.toml missing analyst_effort: %s", content)
+	}
+	if !strings.Contains(string(content), `engineer_effort       = "medium"`) {
+		t.Errorf("harness.toml missing engineer_effort: %s", content)
+	}
+}
+
+// TestWriteTemplate_HarnessToml_EffortOmittedWhenEmpty verifies that the
+// superintendent_effort/engineer_effort keys are omitted entirely (rather
+// than written as empty strings) when no effort is configured.
+func TestWriteTemplate_HarnessToml_EffortOmittedWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	type data struct {
+		Owner                string
+		Repo                 string
+		Language             string
+		MaxEngineers         int
+		SuperintendentModel  string
+		EngineerModel        string
+		AnalystModel         string
+		SuperintendentEffort string
+		EngineerEffort       string
+		AnalystEffort        string
+	}
+	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data{
+		Owner: "owner", Repo: "repo", Language: "ja", MaxEngineers: 4,
+		SuperintendentModel: "claude-sonnet-4-5", EngineerModel: "claude-haiku-4-5", AnalystModel: "claude-opus-4-8",
+	})
+	content, err := os.ReadFile(filepath.Join(dir, "harness.toml"))
+	if err != nil {
+		t.Fatalf("harness.toml not created: %v", err)
+	}
+	if strings.Contains(string(content), "_effort") {
+		t.Errorf("harness.toml should omit effort keys when unset: %s", content)
 	}
 }
 
@@ -559,5 +973,108 @@ func TestMain_Status(t *testing.T) {
 	cmd.Env = append(os.Environ(), "TEST_MAIN_STATUS=1")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("expected zero exit for status: %v", err)
+	}
+}
+
+// --- modelPresets ---
+
+// TestModelPresets_NoStaleModelIDs guards against regressing to retired
+// Claude model IDs (e.g. "claude-sonnet-4-5") in the built-in presets. See
+// https://github.com/ytnobody/HERMIT/issues/94.
+func TestModelPresets_NoStaleModelIDs(t *testing.T) {
+	staleIDs := []string{"claude-sonnet-4-5", "claude-haiku-4-5-latest"}
+
+	for name, preset := range modelPresets {
+		for _, stale := range staleIDs {
+			if preset.Superintendent == stale {
+				t.Errorf("preset %q: Superintendent uses stale model ID %q", name, stale)
+			}
+			if preset.Engineer == stale {
+				t.Errorf("preset %q: Engineer uses stale model ID %q", name, stale)
+			}
+			if preset.Analyst == stale {
+				t.Errorf("preset %q: Analyst uses stale model ID %q", name, stale)
+			}
+		}
+	}
+}
+
+// TestModelPresets_ExpectedValues locks in the current model IDs for the
+// built-in presets so future changes are intentional and reviewed.
+func TestModelPresets_ExpectedValues(t *testing.T) {
+	want := map[string]ModelPreset{
+		"claude": {
+			Superintendent: "claude-sonnet-5",
+			Engineer:       "claude-sonnet-5",
+			Analyst:        "claude-opus-4-8",
+			AnalystEffort:  "high",
+		},
+		"claude-cheap": {
+			Superintendent: "claude-sonnet-5",
+			Engineer:       "claude-haiku-4-5-20251001",
+			Analyst:        "claude-sonnet-5",
+		},
+	}
+
+	for name, wantPreset := range want {
+		gotPreset, ok := modelPresets[name]
+		if !ok {
+			t.Fatalf("preset %q not found in modelPresets", name)
+		}
+		if gotPreset.Superintendent != wantPreset.Superintendent {
+			t.Errorf("preset %q: Superintendent = %q, want %q", name, gotPreset.Superintendent, wantPreset.Superintendent)
+		}
+		if gotPreset.Engineer != wantPreset.Engineer {
+			t.Errorf("preset %q: Engineer = %q, want %q", name, gotPreset.Engineer, wantPreset.Engineer)
+		}
+		if gotPreset.Analyst != wantPreset.Analyst {
+			t.Errorf("preset %q: Analyst = %q, want %q", name, gotPreset.Analyst, wantPreset.Analyst)
+		}
+		if gotPreset.AnalystEffort != wantPreset.AnalystEffort {
+			t.Errorf("preset %q: AnalystEffort = %q, want %q", name, gotPreset.AnalystEffort, wantPreset.AnalystEffort)
+		}
+	}
+}
+
+// --- resolveAnalystModel / resolveAnalystEffort ---
+
+// TestResolveAnalystModel_UsesConfiguredValue verifies that an explicitly
+// configured [model].analyst value is used as-is.
+func TestResolveAnalystModel_UsesConfiguredValue(t *testing.T) {
+	cfg := Config{}
+	cfg.Model.Superintendent = "claude-sonnet-5"
+	cfg.Model.Analyst = "claude-opus-4-8"
+
+	if got := resolveAnalystModel(cfg); got != "claude-opus-4-8" {
+		t.Errorf("resolveAnalystModel() = %q, want %q", got, "claude-opus-4-8")
+	}
+}
+
+// TestResolveAnalystModel_FallsBackToSuperintendent verifies backward
+// compatibility with harness.toml files written before the Analyst role
+// (issue #107) existed: when [model].analyst is unset, the Superintendent's
+// model is used instead of an empty string.
+func TestResolveAnalystModel_FallsBackToSuperintendent(t *testing.T) {
+	cfg := Config{}
+	cfg.Model.Superintendent = "claude-sonnet-5"
+
+	if got := resolveAnalystModel(cfg); got != "claude-sonnet-5" {
+		t.Errorf("resolveAnalystModel() = %q, want fallback %q", got, "claude-sonnet-5")
+	}
+}
+
+// TestResolveAnalystEffort_FallsBackToSuperintendentEffort mirrors
+// TestResolveAnalystModel_FallsBackToSuperintendent for reasoning effort.
+func TestResolveAnalystEffort_FallsBackToSuperintendentEffort(t *testing.T) {
+	cfg := Config{}
+	cfg.Model.SuperintendentEffort = "high"
+
+	if got := resolveAnalystEffort(cfg); got != "high" {
+		t.Errorf("resolveAnalystEffort() = %q, want fallback %q", got, "high")
+	}
+
+	cfg.Model.AnalystEffort = "medium"
+	if got := resolveAnalystEffort(cfg); got != "medium" {
+		t.Errorf("resolveAnalystEffort() = %q, want configured %q", got, "medium")
 	}
 }

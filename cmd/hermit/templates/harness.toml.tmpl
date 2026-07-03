@@ -13,9 +13,55 @@ language      = "{{ .Language }}"
 [model]
 superintendent = "{{ .SuperintendentModel }}"
 engineer       = "{{ .EngineerModel }}"
+analyst        = "{{ .AnalystModel }}"  # Analyst (PM): human requirements -> REQ-ID formatted requirements doc
+{{- if .SuperintendentEffort }}
+superintendent_effort = "{{ .SuperintendentEffort }}"  # reasoning effort: low/medium/high/xhigh/max
+{{- end }}
+{{- if .EngineerEffort }}
+engineer_effort       = "{{ .EngineerEffort }}"  # reasoning effort: low/medium/high/xhigh/max
+{{- end }}
+{{- if .AnalystEffort }}
+analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/high/xhigh/max
+{{- end }}
 
 # branch_prefix = "hermit/your-login"  # defaults to hermit/<gh_login> if omitted
+
+# [risk]
+# high_paths            = ["cmd/", "go.mod", ".github/"]  # HIGH risk when a changed file matches one of these prefixes (see exclude_paths below for exceptions)
+# medium_paths          = ["internal/"]                   # MEDIUM risk when a changed file matches one of these prefixes (see exclude_paths below for exceptions)
+# exclude_paths         = ["cmd/hermit/templates/"]       # never a path-based HIGH/MEDIUM signal even if also matched above (scaffold/template content, not program logic). *_test.go files are always excluded from path matching regardless of this list, since adding tests should not raise risk.
+# high_file_threshold   = 20    # HIGH risk when this many or more files changed
+# high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
+# medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
+# medium_line_threshold = 200   # MEDIUM risk when this many or more lines changed
+
+# [readiness]
+# min_body_length                 = 40                    # minimum non-whitespace chars in the Issue body
+# skip_acceptance_criteria_check  = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
+# label                           = "needs-clarification"  # label applied to Issues judged not ready; also excludes them from list_issues
 
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook
 # type        = "slack"  # "slack" | "discord" | "generic" (auto-detected from URL if omitted)
+
+# [requirements]
+# doc          = "REQUIREMENTS.md"  # requirements doc parsed for "## REQ-xxx:" blocks (default shown)
+# # test_command must produce `go test -v` style output ("=== RUN" markers)
+# # so the sweep can tell "no such test" apart from "test failed".
+# test_command = "go test ./... -run '^{req_id}' -v"
+#
+# # paths: candidate requirements-document locations (relative to the project
+# # root). At `hermit serve` startup, HERMIT checks whether ANY one of these
+# # exists; if none do, it opens exactly one "requirements hearing" Issue
+# # (labeled hermit-hearing) asking a human for the project's purpose, scope,
+# # acceptance criteria, and out-of-scope items, and skips creating a
+# # duplicate on every later restart. hermit-hearing Issues are excluded from
+# # list_issues (they're addressed to a human, not an Engineer) until the
+# # label is removed once answered.
+# #
+# # Default when [requirements] (or just `paths`) is omitted entirely: this
+# # check is enabled by default (NOT a no-op) — the effective path list falls
+# # back to `doc` above if set, otherwise to the built-in default shown below.
+# # There is no config knob to disable the check; delete this comment block's
+# # intent by simply keeping a requirements doc at one of the default paths.
+# paths = ["REQUIREMENTS.md", "docs/requirements.md"]  # any one of these existing is OK (default shown)
