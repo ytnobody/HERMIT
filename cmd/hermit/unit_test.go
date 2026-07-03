@@ -461,6 +461,52 @@ label = "hermit"
 	}
 }
 
+// TestLoadConfig_RequireHumanApproval_GlobalOnly verifies Issue #134's
+// warm-up mode flag: it's applied from the top-level [risk] section to both
+// the resolved default and every per-repo entry, and a [repos.risk] attempt
+// to override it is intentionally ignored, since it's a global-only flag.
+func TestLoadConfig_RequireHumanApproval_GlobalOnly(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "myorg"
+repo  = "primary"
+
+[risk]
+require_human_approval = true
+
+[[repos]]
+owner = "myorg"
+repo  = "frontend"
+label = "hermit"
+
+[repos.risk]
+require_human_approval = false
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if !cfg.Risk.RequireHumanApproval {
+		t.Fatalf("expected cfg.Risk.RequireHumanApproval to be true")
+	}
+
+	def, repoCfgs := resolveRiskConfig(cfg)
+	if !def.RequireHumanApproval {
+		t.Errorf("resolveRiskConfig() default RequireHumanApproval = false, want true")
+	}
+	frontend, ok := repoCfgs["myorg/frontend"]
+	if !ok {
+		t.Fatalf("expected an entry for myorg/frontend, got %+v", repoCfgs)
+	}
+	if !frontend.RequireHumanApproval {
+		t.Errorf("frontend RequireHumanApproval = false, want true (global flag, [repos.risk] override must be ignored)")
+	}
+}
+
 func TestLoadConfig_Missing(t *testing.T) {
 	if os.Getenv("TEST_LOADCONFIG_MISSING") != "" {
 		dir := t.TempDir()

@@ -625,6 +625,120 @@ func TestMergePR_mediumRisk_mergesByDefault(t *testing.T) {
 	}
 }
 
+// --- merge_pr: warm-up mode (require_human_approval, Issue #134) ---
+
+func TestMergePR_warmUpMode_lowRisk_blocked(t *testing.T) {
+	status := &gh.PRStatus{
+		Number:    1,
+		Additions: 5,
+		Deletions: 0,
+		CIPassing: true,
+		Files: []gh.PRFile{
+			{Filename: "README.md", Additions: 5},
+		},
+	}
+	mock := &mockGithubClient{prStatus: status}
+	cfg := risk.DefaultConfig()
+	cfg.RequireHumanApproval = true
+	s := newTestServerWithRisk(t, mock, cfg, nil)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1)}))
+
+	if merged, _ := got["merged"].(bool); merged {
+		t.Errorf("expected merged to be false for LOW risk PR in warm-up mode, got %v", got["merged"])
+	}
+	reason, _ := got["reason"].(string)
+	if !strings.Contains(strings.ToLower(reason), "warm-up") && !strings.Contains(strings.ToLower(reason), "human approval") {
+		t.Errorf("expected reason to indicate warm-up/human-approval mode, got %q", reason)
+	}
+	if mock.mergeCalled {
+		t.Errorf("expected MergePRInRepo not to be called for LOW risk PR in warm-up mode without force")
+	}
+}
+
+func TestMergePR_warmUpMode_highRisk_blocked(t *testing.T) {
+	status := &gh.PRStatus{
+		Number:    1,
+		Additions: 10,
+		Deletions: 0,
+		CIPassing: true,
+		Files: []gh.PRFile{
+			{Filename: "go.mod", Additions: 10},
+		},
+	}
+	mock := &mockGithubClient{prStatus: status}
+	cfg := risk.DefaultConfig()
+	cfg.RequireHumanApproval = true
+	s := newTestServerWithRisk(t, mock, cfg, nil)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1)}))
+
+	if merged, _ := got["merged"].(bool); merged {
+		t.Errorf("expected merged to be false for HIGH risk PR in warm-up mode, got %v", got["merged"])
+	}
+	// HIGH risk follows the existing HIGH-risk path: reason stays "high risk"
+	// and risk_reasons is still populated, unchanged by warm-up mode.
+	if reason, _ := got["reason"].(string); reason != "high risk" {
+		t.Errorf("expected reason %q for HIGH risk PR in warm-up mode, got %v", "high risk", got["reason"])
+	}
+	if _, ok := got["risk_reasons"]; !ok {
+		t.Errorf("expected risk_reasons in response, got %v", got)
+	}
+	if mock.mergeCalled {
+		t.Errorf("expected MergePRInRepo not to be called for HIGH risk PR in warm-up mode without force")
+	}
+}
+
+func TestMergePR_warmUpModeOff_unchangedBehavior(t *testing.T) {
+	status := &gh.PRStatus{
+		Number:    1,
+		Additions: 5,
+		Deletions: 0,
+		CIPassing: true,
+		Files: []gh.PRFile{
+			{Filename: "README.md", Additions: 5},
+		},
+	}
+	mock := &mockGithubClient{prStatus: status}
+	cfg := risk.DefaultConfig()
+	cfg.RequireHumanApproval = false
+	s := newTestServerWithRisk(t, mock, cfg, nil)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1)}))
+
+	if merged, _ := got["merged"].(bool); !merged {
+		t.Errorf("expected merged to be true for LOW risk PR with warm-up mode off, got %v", got["merged"])
+	}
+	if !mock.mergeCalled {
+		t.Errorf("expected MergePRInRepo to be called for LOW risk PR with warm-up mode off")
+	}
+}
+
+func TestMergePR_warmUpMode_forceOverrides(t *testing.T) {
+	status := &gh.PRStatus{
+		Number:    1,
+		Additions: 5,
+		Deletions: 0,
+		CIPassing: true,
+		Files: []gh.PRFile{
+			{Filename: "README.md", Additions: 5},
+		},
+	}
+	mock := &mockGithubClient{prStatus: status}
+	cfg := risk.DefaultConfig()
+	cfg.RequireHumanApproval = true
+	s := newTestServerWithRisk(t, mock, cfg, nil)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1), "force": true}))
+
+	if merged, _ := got["merged"].(bool); !merged {
+		t.Errorf("expected merged to be true when force overrides warm-up mode, got %v", got["merged"])
+	}
+	if !mock.mergeCalled {
+		t.Errorf("expected MergePRInRepo to be called when force overrides warm-up mode")
+	}
+}
+
 func TestListIssues_withTrigger_commentCheckError(t *testing.T) {
 	issues := []gh.Issue{
 		{Number: 1, Title: "issue one", Body: wellSpecifiedBody},

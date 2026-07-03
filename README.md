@@ -226,6 +226,7 @@ engineer       = "claude-sonnet-5"   # model used for Engineer roles
 # high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
 # medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
 # medium_line_threshold = 200   # MEDIUM risk when this many or more lines changed
+# require_human_approval = false  # "warm-up mode": when true, merge_pr always blocks auto-merge regardless of risk level, until a human passes force: true
 
 # [readiness]
 # min_body_length                = 40                    # minimum non-whitespace chars required in the Issue body
@@ -277,6 +278,10 @@ hermit use claude-cheap  # Sonnet for Superintendent, Haiku for Engineers (cost-
 ### Risk Policy
 
 The `[risk]` section controls how `evaluate_risk` and `merge_pr` classify a PR as LOW, MEDIUM, or HIGH risk: which path prefixes are considered high/medium risk, and the file-count/line-count thresholds for each level. Any field left unset falls back to HERMIT's built-in default (shown commented out above), so omitting `[risk]` entirely preserves the original hardcoded behavior. This is especially useful for non-Go projects or repos with a different directory layout than `cmd/`, `internal/`, `go.mod`. In multi-repo mode, each `[[repos]]` entry may define its own `[repos.risk]` sub-table to override `[risk]` for that repo only (see below).
+
+#### Warm-Up Mode (`require_human_approval`)
+
+Structural risk heuristics (changed file count, line count, risky paths) can underestimate small-but-critical changes — a one-line fix to auth logic or error handling can come out LOW and auto-merge, while a large mechanical rename gets flagged HIGH. Setting `require_human_approval = true` in `[risk]` puts HERMIT into "warm-up mode": `merge_pr` always blocks auto-merge — for LOW, MEDIUM, and HIGH risk PRs alike — via the same gate already used for HIGH-risk PRs, until a human reviews the PR and re-runs `merge_pr` with `force: true`. It does not change `evaluate_risk`'s own computed level or reasons; it only changes `merge_pr`'s gating decision. This is a single global flag with no per-repo override, even in multi-repo mode — it applies uniformly across every `[[repos]]` entry regardless of any `[repos.risk]` sub-table.
 
 ### Webhook Notifications
 
