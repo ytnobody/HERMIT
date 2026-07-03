@@ -219,26 +219,39 @@ func (c *Client) ListOpenPRs(issueNum int) ([]PRInfo, error) {
 // CountPRsForIssue returns the total number of pull requests, in any state
 // (open, closed, merged), whose title or body references the given issue
 // number. Used to detect when an issue required multiple attempted PRs.
+//
+// It pages through all results rather than stopping at the first page: with
+// no explicit sort order the GitHub API returns the 100 most-recently-created
+// PRs per page, so a single-page fetch would silently undercount once the
+// repo accumulates more than 100 PRs (older PRs referencing this issue would
+// never be seen).
 func (c *Client) CountPRsForIssue(issueNum int) (int, error) {
 	if issueNum <= 0 {
 		return 0, nil
 	}
-	prs, _, err := c.gh.PullRequests.List(context.Background(), c.owner, c.repo, &gogithub.PullRequestListOptions{
+	count := 0
+	opts := &gogithub.PullRequestListOptions{
 		State:       "all",
 		ListOptions: gogithub.ListOptions{PerPage: 100},
-	})
-	if err != nil {
-		return 0, err
 	}
-	count := 0
-	for _, pr := range prs {
-		detected := extractIssueNumber(pr.GetBody())
-		if detected == 0 {
-			detected = extractIssueNumber(pr.GetTitle())
+	for {
+		prs, resp, err := c.gh.PullRequests.List(context.Background(), c.owner, c.repo, opts)
+		if err != nil {
+			return 0, err
 		}
-		if detected == issueNum {
-			count++
+		for _, pr := range prs {
+			detected := extractIssueNumber(pr.GetBody())
+			if detected == 0 {
+				detected = extractIssueNumber(pr.GetTitle())
+			}
+			if detected == issueNum {
+				count++
+			}
 		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 	return count, nil
 }

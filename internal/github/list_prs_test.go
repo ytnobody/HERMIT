@@ -34,7 +34,6 @@ func TestExtractIssueNumber(t *testing.T) {
 	}
 }
 
-
 func TestListOpenPRs_All(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +301,60 @@ func TestCountPRsForIssue_ZeroIssueNumber_NoAPICall(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected count 0, got %d", count)
+	}
+}
+
+// TestCountPRsForIssue_Paginates verifies that CountPRsForIssue follows the
+// Link "next" header across multiple pages instead of stopping at the first
+// 100 results. Without pagination this would only count the PR(s) on page 1
+// and silently miss the match on page 2.
+func TestCountPRsForIssue_Paginates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("state"); got != "all" {
+			http.Error(w, "expected state=all", http.StatusBadRequest)
+			return
+		}
+		page := r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+		switch page {
+		case "", "1":
+			// Page 1: newest 100 PRs, none referencing issue #42 — simulates
+			// a repo where issue #42's PR has aged out of the most-recent
+			// window because many unrelated PRs were created afterward.
+			w.Header().Set("Link", `<http://example.com/pulls?state=all&page=2>; rel="next", <http://example.com/pulls?state=all&page=2>; rel="last"`)
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"number": 100,
+					"title":  "Unrelated recent PR",
+					"body":   "Closes #7",
+					"head":   map[string]any{"ref": "hermit/issue-7"},
+				},
+			})
+		case "2":
+			// Page 2: the older PR that actually references issue #42.
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"number": 1,
+					"title":  "Original attempt",
+					"body":   "Closes #42",
+					"head":   map[string]any{"ref": "hermit/issue-42"},
+				},
+			})
+		default:
+			http.Error(w, "unexpected page "+page, http.StatusBadRequest)
+		}
+	})
+
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	count, err := client.CountPRsForIssue(42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected count 1 (found only on page 2), got %d", count)
 	}
 }
 
