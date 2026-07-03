@@ -51,18 +51,25 @@ type RiskConfig struct {
 	HighLineThreshold   int      `toml:"high_line_threshold"`
 	MediumFileThreshold int      `toml:"medium_file_threshold"`
 	MediumLineThreshold int      `toml:"medium_line_threshold"`
+	// RequireHumanApproval puts merge_pr into "warm-up mode" (see
+	// risk.Config.RequireHumanApproval). It is read only from the top-level
+	// [risk] section by resolveRiskConfig below; a value set under a
+	// [[repos]] entry's [repos.risk] sub-table is intentionally ignored —
+	// this flag has no per-repo override.
+	RequireHumanApproval bool `toml:"require_human_approval"`
 }
 
 // toRiskConfig converts a RiskConfig (TOML shape) into a risk.Config.
 func (r RiskConfig) toRiskConfig() risk.Config {
 	return risk.Config{
-		HighPaths:           r.HighPaths,
-		MediumPaths:         r.MediumPaths,
-		ExcludePaths:        r.ExcludePaths,
-		HighFileThreshold:   r.HighFileThreshold,
-		HighLineThreshold:   r.HighLineThreshold,
-		MediumFileThreshold: r.MediumFileThreshold,
-		MediumLineThreshold: r.MediumLineThreshold,
+		HighPaths:            r.HighPaths,
+		MediumPaths:          r.MediumPaths,
+		ExcludePaths:         r.ExcludePaths,
+		HighFileThreshold:    r.HighFileThreshold,
+		HighLineThreshold:    r.HighLineThreshold,
+		MediumFileThreshold:  r.MediumFileThreshold,
+		MediumLineThreshold:  r.MediumLineThreshold,
+		RequireHumanApproval: r.RequireHumanApproval,
 	}
 }
 
@@ -157,12 +164,20 @@ type Config struct {
 // [risk] section layered over risk.DefaultConfig()) and, in multi-repo mode,
 // a map of per-repo overrides keyed by "owner/repo" (layered over the
 // resolved default).
+//
+// RequireHumanApproval is applied only from the top-level [risk] section and
+// propagated as-is to every per-repo entry: risk.Merge deliberately never
+// cascades this field (see its doc comment), so it must be set explicitly
+// here to take effect, and any [repos.risk].require_human_approval value is
+// intentionally never consulted — this flag is global-only, by design.
 func resolveRiskConfig(cfg Config) (risk.Config, map[string]risk.Config) {
 	def := risk.Merge(risk.DefaultConfig(), cfg.Risk.toRiskConfig())
+	def.RequireHumanApproval = cfg.Risk.RequireHumanApproval
 
 	var repoConfigs map[string]risk.Config
 	for _, r := range cfg.Repos {
 		merged := risk.Merge(def, r.Risk.toRiskConfig())
+		merged.RequireHumanApproval = def.RequireHumanApproval
 		if repoConfigs == nil {
 			repoConfigs = make(map[string]risk.Config, len(cfg.Repos))
 		}

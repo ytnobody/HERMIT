@@ -33,6 +33,22 @@ type Config struct {
 	HighLineThreshold   int      `json:"high_line_threshold"`
 	MediumFileThreshold int      `json:"medium_file_threshold"`
 	MediumLineThreshold int      `json:"medium_line_threshold"`
+	// RequireHumanApproval, when true, puts HERMIT into "warm-up mode": the
+	// merge_pr MCP tool always blocks auto-merge (the same code path already
+	// used for HIGH-risk PRs), regardless of the risk level Evaluate/
+	// EvaluateWithConfig actually computes for a given PR. It does not affect
+	// risk-level computation itself — Evaluate and EvaluateWithConfig ignore
+	// this field entirely; it is purely a merge_pr gating decision.
+	//
+	// This is intentionally a single global flag with no per-repo override:
+	// Merge (below) deliberately does not cascade this field from override
+	// onto base, both because a bool zero value cannot distinguish "unset"
+	// from "explicitly false" the way an empty slice or a zero threshold can,
+	// and because the flag is meant to apply uniformly across every repo in
+	// multi-repo mode. Callers that need to combine a harness.toml [risk]
+	// section with the built-in defaults must set this field explicitly
+	// after calling Merge (see cmd/hermit's resolveRiskConfig).
+	RequireHumanApproval bool `json:"require_human_approval"`
 }
 
 // DefaultConfig returns the built-in risk policy that HERMIT has always
@@ -47,11 +63,12 @@ func DefaultConfig() Config {
 		// happens to live under the cmd/ prefix but carries none of the risk
 		// of actual CLI-entrypoint program logic, so it's excluded from
 		// path-based matching by default.
-		ExcludePaths:        []string{"cmd/hermit/templates/"},
-		HighFileThreshold:   20,
-		HighLineThreshold:   500,
-		MediumFileThreshold: 10,
-		MediumLineThreshold: 200,
+		ExcludePaths:         []string{"cmd/hermit/templates/"},
+		HighFileThreshold:    20,
+		HighLineThreshold:    500,
+		MediumFileThreshold:  10,
+		MediumLineThreshold:  200,
+		RequireHumanApproval: false,
 	}
 }
 
@@ -60,6 +77,11 @@ func DefaultConfig() Config {
 // built-in defaults, and again to layer a per-repo [repos.risk] override over
 // the resulting effective config. Fields left unset (empty slice or zero
 // int) in override are left untouched, i.e. they fall back to base.
+//
+// RequireHumanApproval is deliberately excluded from this cascade — see its
+// doc comment on Config. result.RequireHumanApproval always retains base's
+// value; callers that need to apply harness.toml's top-level [risk]
+// .require_human_approval must set it explicitly after calling Merge.
 func Merge(base, override Config) Config {
 	result := base
 	if len(override.HighPaths) > 0 {

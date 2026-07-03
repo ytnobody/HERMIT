@@ -34,6 +34,7 @@ analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/
 # high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
 # medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
 # medium_line_threshold = 200   # MEDIUM risk when this many or more lines changed
+# require_human_approval = false  # "warm-up mode": when true, merge_pr always blocks auto-merge (LOW/MEDIUM/HIGH alike) until a human passes force: true. Global flag only — no per-repo override, even in multi-repo mode. Does not change evaluate_risk's own computed level.
 
 # [readiness]
 # min_body_length                 = 40                    # minimum non-whitespace chars in the Issue body
