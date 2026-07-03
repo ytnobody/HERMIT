@@ -14,6 +14,7 @@ import (
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/notification"
 	"github.com/ytnobody/hermit/internal/readiness"
+	"github.com/ytnobody/hermit/internal/requirements"
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
@@ -98,13 +99,18 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 
-			// Issues already flagged as needing clarification are excluded from
-			// the queue up front (cheap check against the labels already
-			// returned by the list call — no extra API round-trip). They
-			// return to the queue once a human removes the label.
+			// Issues already flagged as needing clarification, and standing
+			// requirements-hearing Issues (Issue #104 — addressed to a human,
+			// not an Engineer), are excluded from the queue up front (cheap
+			// check against the labels already returned by the list call — no
+			// extra API round-trip). They return to the queue once a human
+			// removes the respective label.
 			var candidates []gh.Issue
 			for _, issue := range issues {
 				if readiness.HasLabel(issue.Labels, readinessCfg.Label) {
+					continue
+				}
+				if readiness.HasLabel(issue.Labels, requirements.HearingLabel) {
 					continue
 				}
 				candidates = append(candidates, issue)

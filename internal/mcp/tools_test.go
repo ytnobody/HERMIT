@@ -13,6 +13,7 @@ import (
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/readiness"
+	"github.com/ytnobody/hermit/internal/requirements"
 	"github.com/ytnobody/hermit/internal/risk"
 )
 
@@ -968,6 +969,32 @@ func TestListIssues_readiness_excludesNeedsClarificationLabel(t *testing.T) {
 	// The already-labeled issue should not trigger a fresh comment/label call.
 	if len(mock.postedComments) != 0 {
 		t.Fatalf("expected no hearing comment for already-labeled issue, got %+v", mock.postedComments)
+	}
+}
+
+func TestListIssues_excludesHermitHearingLabel(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 1, Title: "well specified", Body: wellSpecifiedBody},
+		{Number: 2, Title: "requirements hearing", Body: "please answer", Labels: []string{requirements.HearingLabel}},
+	}
+	mock := &mockGithubClient{issues: issues}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got []gh.Issue
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 1 || got[0].Number != 1 {
+		t.Fatalf("expected only issue #1 to be returned, hermit-hearing issue excluded, got %+v", got)
 	}
 }
 
