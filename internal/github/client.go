@@ -382,8 +382,51 @@ func (c *Client) GetCIDetails(prNumber int) (*CIDetails, error) {
 	return c.GetCIDetailsInRepo(prNumber, "", "")
 }
 
+// checkRunToResult converts a Checks API check run (as used by GitHub
+// Actions) into the same CICheckResult shape used for legacy Status API
+// entries, so callers see a single unified list regardless of which API a
+// given check was reported through.
+func checkRunToResult(run *gogithub.CheckRun) CICheckResult {
+	var state string
+	switch {
+	case run.GetStatus() != "completed":
+		// queued or in_progress
+		state = "pending"
+	case run.GetConclusion() == "success" || run.GetConclusion() == "neutral" || run.GetConclusion() == "skipped":
+		state = "success"
+	default:
+		// failure, cancelled, timed_out, action_required, stale, or unset.
+		state = "failure"
+	}
+
+	description := run.GetConclusion()
+	if description == "" {
+		description = run.GetStatus()
+	}
+	if out := run.GetOutput(); out.GetTitle() != "" {
+		description = out.GetTitle()
+	}
+
+	return CICheckResult{
+		Name:        run.GetName(),
+		State:       state,
+		Description: description,
+		TargetURL:   run.GetHTMLURL(),
+	}
+}
+
 // GetCIDetailsInRepo returns detailed CI/CD status for a PR in a specific
 // repo. Pass empty strings to use the client's primary owner/repo.
+//
+// It merges results from both the legacy Status API (GetCombinedStatus,
+// used by some third-party integrations) and the Checks API
+// (ListCheckRunsForRef, used by GitHub Actions and most modern CI
+// integrations) into a single view. Repos whose CI runs exclusively through
+// GitHub Actions report zero entries via the Status API, so relying on that
+// API alone silently and permanently misreports CI as not-passing for such
+// repos. Fetching the Checks API is best-effort: if it fails (e.g. because
+// the API isn't reachable in a given environment), we fall back to the
+// Status API result alone rather than failing the whole call.
 func (c *Client) GetCIDetailsInRepo(prNumber int, owner, repo string) (*CIDetails, error) {
 	owner, repo = c.resolveRepo(owner, repo)
 
@@ -398,9 +441,6 @@ func (c *Client) GetCIDetailsInRepo(prNumber int, owner, repo string) (*CIDetail
 		return nil, fmt.Errorf("get combined status: %w", err)
 	}
 
-	state := status.GetState()
-	passing := state == "success" || state == ""
-
 	var checks []CICheckResult
 	for _, s := range status.Statuses {
 		checks = append(checks, CICheckResult{
@@ -411,11 +451,43 @@ func (c *Client) GetCIDetailsInRepo(prNumber int, owner, repo string) (*CIDetail
 		})
 	}
 
-	var failed []CICheckResult
-	for _, ch := range checks {
-		if ch.State == "failure" || ch.State == "error" {
-			failed = append(failed, ch)
+	if runResults, _, err := c.gh.Checks.ListCheckRunsForRef(context.Background(), owner, repo, sha, nil); err == nil && runResults != nil {
+		for _, run := range runResults.CheckRuns {
+			checks = append(checks, checkRunToResult(run))
 		}
+	}
+
+	var failed []CICheckResult
+	hasFailure := false
+	hasPending := false
+	for _, ch := range checks {
+		switch ch.State {
+		case "failure", "error":
+			hasFailure = true
+			failed = append(failed, ch)
+		case "pending":
+			hasPending = true
+		}
+	}
+
+	totalCount := len(checks)
+	var state string
+	var passing bool
+	switch {
+	case totalCount == 0:
+		// No CI configured via either API: treat as passing, consistent with
+		// IsCIPassingInRepo's handling of total_count == 0.
+		state = ""
+		passing = true
+	case hasFailure:
+		state = "failure"
+		passing = false
+	case hasPending:
+		state = "pending"
+		passing = false
+	default:
+		state = "success"
+		passing = true
 	}
 
 	return &CIDetails{
@@ -423,7 +495,7 @@ func (c *Client) GetCIDetailsInRepo(prNumber int, owner, repo string) (*CIDetail
 		SHA:        sha,
 		State:      state,
 		Passing:    passing,
-		TotalCount: len(checks),
+		TotalCount: totalCount,
 		Checks:     checks,
 		FailedOnly: failed,
 	}, nil
