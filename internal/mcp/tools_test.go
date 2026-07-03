@@ -9,7 +9,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/ytnobody/hermit/internal/cihistory"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/readiness"
 )
 
@@ -39,19 +41,23 @@ type addedLabel struct {
 }
 
 type mockGithubClient struct {
-	issues             []gh.Issue
-	issuesErr          error
-	comments           []gh.IssueComment
-	commentsErr        error
-	prComments         []gh.PRComment
-	prCommentsErr      error
-	assignErr          error
-	prStatus           *gh.PRStatus
-	prStatusErr        error
-	mergePRErr         error
-	mergeCalled        bool
-	commentMatchResult bool
-	commentMatchErr    error
+	issues              []gh.Issue
+	issuesErr           error
+	comments            []gh.IssueComment
+	commentsErr         error
+	prComments          []gh.PRComment
+	prCommentsErr       error
+	assignErr           error
+	prStatus            *gh.PRStatus
+	prStatusErr         error
+	mergePRErr          error
+	mergeCalled         bool
+	commentMatchResult  bool
+	commentMatchErr     error
+	commentMatchByIssue map[int]bool // optional per-number override for HasCommentMatching
+	prCountForIssue     int
+	prCountForIssueErr  error
+	ciDetails           *gh.CIDetails
 
 	// hearingMatchResult, keyed by issue number, controls the result of
 	// HasCommentMatchingInRepo (used to check whether a readiness hearing
@@ -116,6 +122,10 @@ func (m *mockGithubClient) ListOpenPRs(_ int) ([]gh.PRInfo, error) {
 	return nil, nil
 }
 
+func (m *mockGithubClient) CountPRsForIssue(_ int) (int, error) {
+	return m.prCountForIssue, m.prCountForIssueErr
+}
+
 func (m *mockGithubClient) ReviewPR(_ int) (string, error) {
 	return "", nil
 }
@@ -124,7 +134,12 @@ func (m *mockGithubClient) GetIssueComments(_ int, _ string) ([]gh.IssueComment,
 	return m.comments, m.commentsErr
 }
 
-func (m *mockGithubClient) HasCommentMatching(_ int, _ string) (bool, error) {
+func (m *mockGithubClient) HasCommentMatching(number int, _ string) (bool, error) {
+	if m.commentMatchByIssue != nil {
+		if v, ok := m.commentMatchByIssue[number]; ok {
+			return v, m.commentMatchErr
+		}
+	}
 	return m.commentMatchResult, m.commentMatchErr
 }
 
@@ -148,6 +163,9 @@ func (m *mockGithubClient) GetDefaultBranch() (string, error) {
 }
 
 func (m *mockGithubClient) GetCIDetailsInRepo(_ int, _, _ string) (*gh.CIDetails, error) {
+	if m.ciDetails != nil {
+		return m.ciDetails, nil
+	}
 	return &gh.CIDetails{}, nil
 }
 
@@ -177,6 +195,16 @@ func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig
 	s := server.NewMCPServer("hermit-test", "0.0.0")
 	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), model)
 	return s
+}
+
+// newTestServerWithRoot behaves like newTestServer but also returns the
+// rootDir used, so tests can inspect files written under .hermit/.
+func newTestServerWithRoot(t *testing.T, client githubClient) (*server.MCPServer, string) {
+	t.Helper()
+	root := t.TempDir()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), ModelConfig{})
+	return s, root
 }
 
 func callTool(t *testing.T, s *server.MCPServer, name string, args map[string]any) *mcp.CallToolResult {
@@ -570,6 +598,236 @@ func TestListIssues_withTrigger_commentCheckError(t *testing.T) {
 	}
 }
 
+// --- merge_pr: real signal wiring (Issue #102) ---
+
+func mergePRResult(t *testing.T, result *mcp.CallToolResult) map[string]any {
+	t.Helper()
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	return got
+}
+
+func TestMergePR_AllSignalsFalse_PerfectScore(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus: &gh.PRStatus{Number: 1, CIPassing: true},
+	}
+	s, _ := newTestServerWithRoot(t, mock)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(1)}))
+
+	if got["merged"] != true {
+		t.Fatalf("expected merged=true, got %v", got)
+	}
+	if score, ok := got["score"].(float64); !ok || score != 100 {
+		t.Errorf("expected score 100, got %v", got["score"])
+	}
+	if _, hasLesson := got["lesson"]; hasLesson {
+		t.Errorf("expected no lesson for a perfect score, got %v", got["lesson"])
+	}
+}
+
+func TestMergePR_CIWasFailing_DeductsScore(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus: &gh.PRStatus{Number: 5, CIPassing: true},
+	}
+	s, root := newTestServerWithRoot(t, mock)
+
+	// Simulate an earlier check_ci_status call that observed CI failing.
+	if err := cihistory.RecordFailure(root, 5); err != nil {
+		t.Fatalf("RecordFailure error: %v", err)
+	}
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(5)}))
+
+	if score, ok := got["score"].(float64); !ok || score != 80 {
+		t.Errorf("expected score 80 (100 - 20 for CI failing), got %v", got["score"])
+	}
+}
+
+func TestMergePR_CIHistoryClearedAfterMerge(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus: &gh.PRStatus{Number: 6, CIPassing: true},
+	}
+	s, root := newTestServerWithRoot(t, mock)
+
+	if err := cihistory.RecordFailure(root, 6); err != nil {
+		t.Fatalf("RecordFailure error: %v", err)
+	}
+
+	callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(6)})
+
+	failing, err := cihistory.WasFailing(root, 6)
+	if err != nil {
+		t.Fatalf("WasFailing error: %v", err)
+	}
+	if failing {
+		t.Error("expected CI failure history to be cleared after merge")
+	}
+}
+
+func TestMergePR_HasMultiplePRs_DeductsScore(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus:        &gh.PRStatus{Number: 7, CIPassing: true, IssueNumber: 42},
+		prCountForIssue: 2,
+	}
+	s, _ := newTestServerWithRoot(t, mock)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(7)}))
+
+	if score, ok := got["score"].(float64); !ok || score != 85 {
+		t.Errorf("expected score 85 (100 - 15 for multiple PRs), got %v", got["score"])
+	}
+}
+
+func TestMergePR_SinglePRForIssue_NoDeduction(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus:        &gh.PRStatus{Number: 8, CIPassing: true, IssueNumber: 42},
+		prCountForIssue: 1,
+	}
+	s, _ := newTestServerWithRoot(t, mock)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(8)}))
+
+	if score, ok := got["score"].(float64); !ok || score != 100 {
+		t.Errorf("expected score 100 for a single PR on the issue, got %v", got["score"])
+	}
+}
+
+func TestMergePR_HasClarification_ViaPRComment_DeductsScore(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus:           &gh.PRStatus{Number: 9, CIPassing: true},
+		commentMatchResult: true,
+	}
+	s, _ := newTestServerWithRoot(t, mock)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(9)}))
+
+	if score, ok := got["score"].(float64); !ok || score != 80 {
+		t.Errorf("expected score 80 (100 - 20 for clarification), got %v", got["score"])
+	}
+}
+
+func TestMergePR_HasClarification_ViaIssueComment_DeductsScore(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus:            &gh.PRStatus{Number: 10, CIPassing: true, IssueNumber: 99},
+		commentMatchResult:  false,
+		commentMatchByIssue: map[int]bool{99: true}, // PR (10) has no match, but the linked issue (99) does
+	}
+	s, _ := newTestServerWithRoot(t, mock)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(10)}))
+
+	if score, ok := got["score"].(float64); !ok || score != 80 {
+		t.Errorf("expected score 80 (100 - 20 for clarification found on linked issue), got %v", got["score"])
+	}
+}
+
+func TestMergePR_MultipleDeductions_GeneratesLesson(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus:        &gh.PRStatus{Number: 11, CIPassing: true, IssueNumber: 42},
+		prCountForIssue: 2,
+	}
+	s, root := newTestServerWithRoot(t, mock)
+
+	if err := cihistory.RecordFailure(root, 11); err != nil {
+		t.Fatalf("RecordFailure error: %v", err)
+	}
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(11)}))
+
+	// 100 - 20 (CI failing) - 15 (multiple PRs) = 65, which is below the
+	// lessons.GenerateLesson threshold of 70, so a lesson must be recorded.
+	if score, ok := got["score"].(float64); !ok || score != 65 {
+		t.Errorf("expected score 65, got %v", got["score"])
+	}
+	lesson, ok := got["lesson"].(string)
+	if !ok || lesson == "" {
+		t.Errorf("expected a non-empty lesson for a low score, got %v", got["lesson"])
+	}
+
+	saved, err := lessons.ReadLessons(root)
+	if err != nil {
+		t.Fatalf("ReadLessons error: %v", err)
+	}
+	if len(saved) != 1 || saved[0] != lesson {
+		t.Errorf("expected the lesson to be persisted under .hermit/, got %v", saved)
+	}
+}
+
+func TestMergePR_CIFailing_DoesNotMergeOrScore(t *testing.T) {
+	mock := &mockGithubClient{
+		prStatus: &gh.PRStatus{Number: 12, CIPassing: false},
+	}
+	s, root := newTestServerWithRoot(t, mock)
+
+	got := mergePRResult(t, callTool(t, s, "merge_pr", map[string]any{"pr_number": float64(12)}))
+
+	if got["merged"] != false {
+		t.Fatalf("expected merged=false when CI is failing, got %v", got)
+	}
+	if _, hasScore := got["score"]; hasScore {
+		t.Errorf("expected no score when the PR was not merged, got %v", got["score"])
+	}
+
+	saved, err := lessons.ReadLessons(root)
+	if err != nil {
+		t.Fatalf("ReadLessons error: %v", err)
+	}
+	if len(saved) != 0 {
+		t.Errorf("expected no lesson to be recorded when the PR was not merged, got %v", saved)
+	}
+}
+
+// --- check_ci_status: records CI failure history for later scoring ---
+
+func TestCheckCIStatus_RecordsFailureHistory(t *testing.T) {
+	mock := &mockGithubClient{
+		ciDetails: &gh.CIDetails{
+			PRNumber: 20,
+			Passing:  false,
+			FailedOnly: []gh.CICheckResult{
+				{Name: "test", State: "failure"},
+			},
+		},
+	}
+	s, root := newTestServerWithRoot(t, mock)
+
+	callTool(t, s, "check_ci_status", map[string]any{"pr_number": float64(20)})
+
+	failing, err := cihistory.WasFailing(root, 20)
+	if err != nil {
+		t.Fatalf("WasFailing error: %v", err)
+	}
+	if !failing {
+		t.Error("expected check_ci_status to record CI failure history")
+	}
+}
+
+func TestCheckCIStatus_Passing_DoesNotRecordFailure(t *testing.T) {
+	mock := &mockGithubClient{
+		ciDetails: &gh.CIDetails{PRNumber: 21, Passing: true},
+	}
+	s, root := newTestServerWithRoot(t, mock)
+
+	callTool(t, s, "check_ci_status", map[string]any{"pr_number": float64(21)})
+
+	failing, err := cihistory.WasFailing(root, 21)
+	if err != nil {
+		t.Fatalf("WasFailing error: %v", err)
+	}
+	if failing {
+		t.Error("expected no CI failure history to be recorded when CI is passing")
+	}
+}
 
 // --- readiness behavior ---
 
