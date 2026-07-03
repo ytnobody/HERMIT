@@ -8,12 +8,20 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/ytnobody/hermit/internal/cihistory"
 	"github.com/ytnobody/hermit/internal/git"
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/notification"
+	"github.com/ytnobody/hermit/internal/readiness"
+	"github.com/ytnobody/hermit/internal/requirements"
 	"github.com/ytnobody/hermit/internal/risk"
 )
+
+// clarificationTrigger is the marker HERMIT looks for in Issue/PR comments to
+// detect that a human had to step in and request clarification mid-flow. See
+// docs/madflow-comparison.md.
+const clarificationTrigger = "[Clarification Needed]"
 
 type githubClient interface {
 	CheckRateLimit(threshold int) error
@@ -29,15 +37,38 @@ type githubClient interface {
 	MergePRInRepo(number int, owner, repo string) error
 	CloseIssue(number int, comment string) error
 	ListOpenPRs(issueNum int) ([]gh.PRInfo, error)
+	CountPRsForIssue(issueNum int) (int, error)
 	ReviewPR(num int) (string, error)
 	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
 	HasCommentMatching(number int, trigger string) (bool, error)
+	HasCommentMatchingInRepo(number int, trigger, owner, repo string) (bool, error)
+	AddLabelInRepo(number int, label, owner, repo string) error
 	GetDefaultBranch() (string, error)
 	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
 	GetRecentPRComments(prNumber int, since string) ([]gh.PRComment, error)
+	// CreateIssue is used by the run_requirements_sweep tool to open issues
+	// for unimplemented/regressed/text-changed requirements via
+	// requirements.NewGitHubIssueClient — see requirements.ghClient, which
+	// this interface must remain a superset of.
+	CreateIssue(title, body string) (int, error)
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string) {
+// resolveRiskConfig returns the risk.Config to apply for the given owner/repo
+// pair: the per-repo override in repoRiskConfigs when present, otherwise
+// defaultRiskConfig. An empty owner/repo (the primary repo in single-repo
+// mode, or the unqualified default in multi-repo mode) always resolves to
+// defaultRiskConfig.
+func resolveRiskConfig(owner, repo string, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config) risk.Config {
+	if owner == "" && repo == "" {
+		return defaultRiskConfig
+	}
+	if cfg, ok := repoRiskConfigs[owner+"/"+repo]; ok {
+		return cfg
+	}
+	return defaultRiskConfig
+}
+
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -72,6 +103,25 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+
+			// Issues already flagged as needing clarification, and standing
+			// requirements-hearing Issues (Issue #104 — addressed to a human,
+			// not an Engineer), are excluded from the queue up front (cheap
+			// check against the labels already returned by the list call — no
+			// extra API round-trip). They return to the queue once a human
+			// removes the respective label.
+			var candidates []gh.Issue
+			for _, issue := range issues {
+				if readiness.HasLabel(issue.Labels, readinessCfg.Label) {
+					continue
+				}
+				if readiness.HasLabel(issue.Labels, requirements.HearingLabel) {
+					continue
+				}
+				candidates = append(candidates, issue)
+			}
+			issues = candidates
+
 			if triggerComment != "" {
 				var filtered []gh.Issue
 				for _, issue := range issues {
@@ -85,6 +135,37 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				}
 				issues = filtered
 			}
+
+			// Deterministically judge whether each remaining Issue has enough
+			// information to start implementation. Issues judged not ready get
+			// a structured hearing comment (posted at most once, idempotently)
+			// and the readiness label, then are excluded from the returned
+			// queue until a human addresses the feedback.
+			var ready []gh.Issue
+			for _, issue := range issues {
+				result := readiness.Evaluate(issue.Body, readinessCfg)
+				if result.Ready {
+					ready = append(ready, issue)
+					continue
+				}
+
+				alreadyAsked, err := client.HasCommentMatchingInRepo(issue.Number, readiness.HearingMarker, issue.Owner, issue.Repo)
+				if err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				if !alreadyAsked {
+					comment := readiness.HearingComment(result.Reasons)
+					if err := client.PostCommentInRepo(issue.Number, comment, issue.Owner, issue.Repo); err != nil {
+						return mcp.NewToolResultError(err.Error()), nil
+					}
+				}
+				if err := client.AddLabelInRepo(issue.Number, readinessCfg.Label, issue.Owner, issue.Repo); err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				// Excluded from the returned queue either way.
+			}
+			issues = ready
+
 			b, err := json.Marshal(issues)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
@@ -164,7 +245,8 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			level, reasons := risk.Evaluate(status.Files, status.Additions, status.Deletions)
+			riskCfg := resolveRiskConfig(owner, repo, defaultRiskConfig, repoRiskConfigs)
+			level, reasons := risk.EvaluateWithConfig(status.Files, status.Additions, status.Deletions, riskCfg)
 			b, _ := json.Marshal(map[string]any{"level": level, "reasons": reasons})
 			return mcp.NewToolResultText(string(b)), nil
 		},
@@ -172,12 +254,13 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("merge_pr",
-			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Posts a risk comment but always merges regardless of risk level."),
+			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Posts a risk comment and, by default, blocks the merge when the risk level is HIGH (returns merged: false). Pass force: true to merge a HIGH-risk PR anyway."),
 			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
 			mcp.WithString("worktree_path", mcp.Description("Path to the worktree to remove after merge (optional)")),
 			mcp.WithString("branch", mcp.Description("Branch name to remove after merge (optional)")),
 			mcp.WithString("owner", mcp.Description("Repository owner (optional, defaults to primary repo)")),
 			mcp.WithString("repo", mcp.Description("Repository name (optional, defaults to primary repo)")),
+			mcp.WithBoolean("force", mcp.Description("If true, merges even when the risk level is HIGH (optional, default false)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("pr_number")
@@ -186,14 +269,20 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			}
 			owner := req.GetString("owner", "")
 			repo := req.GetString("repo", "")
+			force := req.GetBool("force", false)
 			status, err := client.GetPRStatusInRepo(num, owner, repo)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			level, reasons := risk.Evaluate(status.Files, status.Additions, status.Deletions)
+			riskCfg := resolveRiskConfig(owner, repo, defaultRiskConfig, repoRiskConfigs)
+			level, reasons := risk.EvaluateWithConfig(status.Files, status.Additions, status.Deletions, riskCfg)
 			if level == risk.High {
 				msg := fmt.Sprintf("⚠️ HERMIT: HIGH risk detected.\nReasons: %v", reasons)
 				_ = client.PostCommentInRepo(num, msg, owner, repo)
+				if !force {
+					b, _ := json.Marshal(map[string]any{"merged": false, "reason": "high risk", "risk_reasons": reasons})
+					return mcp.NewToolResultText(string(b)), nil
+				}
 			}
 			if !status.CIPassing {
 				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "CI failing"})
@@ -210,14 +299,35 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				_ = git.CloseWorktree(wtPath, branch)
 			}
 
+			// Gather real signals for lessons scoring.
+			ciWasFailing, _ := cihistory.WasFailing(rootDir, num)
+
+			hasMultiplePRs := false
+			if status.IssueNumber > 0 {
+				if count, err := client.CountPRsForIssue(status.IssueNumber); err == nil && count > 1 {
+					hasMultiplePRs = true
+				}
+			}
+
+			hasClarification := false
+			if matched, err := client.HasCommentMatching(num, clarificationTrigger); err == nil && matched {
+				hasClarification = true
+			}
+			if !hasClarification && status.IssueNumber > 0 {
+				if matched, err := client.HasCommentMatching(status.IssueNumber, clarificationTrigger); err == nil && matched {
+					hasClarification = true
+				}
+			}
+
 			// Score and record lesson
 			score, lesson, _ := lessons.ProcessMergedPR(
 				rootDir,
 				strings.ToUpper(string(level)),
-				false,
-				false,
-				false,
+				ciWasFailing,
+				hasMultiplePRs,
+				hasClarification,
 			)
+			_ = cihistory.ClearFailure(rootDir, num)
 
 			result := map[string]any{"merged": true, "score": score}
 			if lesson != "" {
@@ -335,10 +445,25 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("get_config",
-			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval."),
+			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval, the risk-evaluation policy, and the model/reasoning-effort configured for each role (superintendent, engineer, analyst)."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			b, _ := json.Marshal(map[string]any{"loop_interval": loopInterval})
+			resp := map[string]any{
+				"loop_interval": loopInterval,
+				"risk":          defaultRiskConfig,
+				"model": map[string]any{
+					"superintendent":        model.Superintendent,
+					"engineer":              model.Engineer,
+					"analyst":               model.Analyst,
+					"superintendent_effort": model.SuperintendentEffort,
+					"engineer_effort":       model.EngineerEffort,
+					"analyst_effort":        model.AnalystEffort,
+				},
+			}
+			if len(repoRiskConfigs) > 0 {
+				resp["risk_overrides"] = repoRiskConfigs
+			}
+			b, _ := json.Marshal(resp)
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
@@ -389,7 +514,9 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			// If CI is failing, post an investigation comment on the PR.
+			// If CI is failing, post an investigation comment on the PR and
+			// record the failure so it counts against the lessons score even
+			// if the PR later passes and gets merged.
 			if !details.Passing && len(details.FailedOnly) > 0 {
 				var failNames []string
 				for _, f := range details.FailedOnly {
@@ -398,6 +525,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				msg := fmt.Sprintf("⚠️ HERMIT: CI/CD failure detected on PR #%d (SHA: %s).\nFailing checks: %s\nPlease investigate and fix before merging.",
 					num, details.SHA, strings.Join(failNames, ", "))
 				_ = client.PostCommentInRepo(num, msg, owner, repo)
+				_ = cihistory.RecordFailure(rootDir, num)
 			}
 			b, err := json.Marshal(details)
 			if err != nil {
@@ -450,6 +578,39 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			b, err := json.Marshal(map[string]any{"pr_number": num, "comments": comments, "count": len(comments)})
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("run_requirements_sweep",
+			mcp.WithDescription("Runs the requirements reconcile sweep (Issue #106) on demand against the configured requirements document and [requirements].test_command: parses \"## REQ-xxx:\" blocks, runs each requirement's test, and opens (deduped) GitHub issues for requirements that are unimplemented, regressed, or whose text changed since the last sweep. Returns a summary of counts and issues opened. If no requirements document is found or no test_command is configured, returns skipped=true with a reason instead of an error. The Superintendent loop should call this roughly hourly (tracking its own \"last sweep\" timestamp the same way it tracks get_recent_pr_comments' \"since\"), not on every cycle."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			summary, err := requirements.RunReconcileSweep(rootDir, requirementsCfg.Doc, requirementsCfg.TestCommand, requirements.NewGitHubIssueClient(client))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if summary.Skipped {
+				b, _ := json.Marshal(map[string]any{
+					"skipped": true,
+					"reason":  summary.SkipReason,
+				})
+				return mcp.NewToolResultText(string(b)), nil
+			}
+			b, err := json.Marshal(map[string]any{
+				"skipped":        false,
+				"satisfied":      summary.Satisfied,
+				"unimplemented":  summary.Unimplemented,
+				"regressed":      summary.Regressed,
+				"skipped_manual": summary.SkippedManual,
+				"issues_opened":  summary.IssuesOpened,
+				"summary": fmt.Sprintf("%d satisfied, %d unimplemented, %d regressed, %d skipped (manual), %d issue(s) opened",
+					summary.Satisfied, summary.Unimplemented, summary.Regressed, summary.SkippedManual, summary.IssuesOpened),
+			})
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}

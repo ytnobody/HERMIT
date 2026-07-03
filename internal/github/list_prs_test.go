@@ -34,7 +34,6 @@ func TestExtractIssueNumber(t *testing.T) {
 	}
 }
 
-
 func TestListOpenPRs_All(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
@@ -214,5 +213,232 @@ func TestListOpenPRs_NoIssueRef(t *testing.T) {
 	}
 	if prs[0].IssueNumber != 0 {
 		t.Errorf("expected IssueNumber=0 for PR with no issue ref, got %d", prs[0].IssueNumber)
+	}
+}
+
+// --- CountPRsForIssue ---
+
+func TestCountPRsForIssue_CountsAcrossAllStates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("state"); got != "all" {
+			http.Error(w, "expected state=all", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"number": 1,
+				"title":  "First attempt",
+				"body":   "Closes #42",
+				"head":   map[string]any{"ref": "hermit/issue-42"},
+			},
+			{
+				"number": 2,
+				"title":  "Second attempt after the first was abandoned",
+				"body":   "Closes #42",
+				"head":   map[string]any{"ref": "hermit/issue-42-retry"},
+			},
+			{
+				"number": 3,
+				"title":  "Unrelated PR",
+				"body":   "Closes #7",
+				"head":   map[string]any{"ref": "hermit/issue-7"},
+			},
+		})
+	})
+
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	count, err := client.CountPRsForIssue(42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected count 2, got %d", count)
+	}
+}
+
+func TestCountPRsForIssue_SinglePR(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"number": 1,
+				"title":  "Only attempt",
+				"body":   "Closes #42",
+				"head":   map[string]any{"ref": "hermit/issue-42"},
+			},
+		})
+	})
+
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	count, err := client.CountPRsForIssue(42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected count 1, got %d", count)
+	}
+}
+
+func TestCountPRsForIssue_ZeroIssueNumber_NoAPICall(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("expected no API call when issueNum <= 0")
+	})
+
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	count, err := client.CountPRsForIssue(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected count 0, got %d", count)
+	}
+}
+
+// TestCountPRsForIssue_Paginates verifies that CountPRsForIssue follows the
+// Link "next" header across multiple pages instead of stopping at the first
+// 100 results. Without pagination this would only count the PR(s) on page 1
+// and silently miss the match on page 2.
+func TestCountPRsForIssue_Paginates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("state"); got != "all" {
+			http.Error(w, "expected state=all", http.StatusBadRequest)
+			return
+		}
+		page := r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+		switch page {
+		case "", "1":
+			// Page 1: newest 100 PRs, none referencing issue #42 — simulates
+			// a repo where issue #42's PR has aged out of the most-recent
+			// window because many unrelated PRs were created afterward.
+			w.Header().Set("Link", `<http://example.com/pulls?state=all&page=2>; rel="next", <http://example.com/pulls?state=all&page=2>; rel="last"`)
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"number": 100,
+					"title":  "Unrelated recent PR",
+					"body":   "Closes #7",
+					"head":   map[string]any{"ref": "hermit/issue-7"},
+				},
+			})
+		case "2":
+			// Page 2: the older PR that actually references issue #42.
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"number": 1,
+					"title":  "Original attempt",
+					"body":   "Closes #42",
+					"head":   map[string]any{"ref": "hermit/issue-42"},
+				},
+			})
+		default:
+			http.Error(w, "unexpected page "+page, http.StatusBadRequest)
+		}
+	})
+
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	count, err := client.CountPRsForIssue(42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected count 1 (found only on page 2), got %d", count)
+	}
+}
+
+func TestCountPRsForIssue_APIError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	})
+
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	_, err := client.CountPRsForIssue(42)
+	if err == nil {
+		t.Error("expected error from API failure, got nil")
+	}
+}
+
+// --- GetPRStatusInRepo: IssueNumber detection ---
+
+func TestGetPRStatusInRepo_DetectsIssueNumberFromBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/pulls/30", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"number":    30,
+			"title":     "Fix the thing",
+			"body":      "Closes #15",
+			"additions": 1,
+			"deletions": 1,
+			"head":      map[string]any{"sha": "sha30"},
+		})
+	})
+	mux.HandleFunc("/repos/owner/repo/pulls/30/files", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/repos/owner/repo/commits/sha30/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"state": "success"})
+	})
+
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	status, err := client.GetPRStatusInRepo(30, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status.IssueNumber != 15 {
+		t.Errorf("expected IssueNumber 15, got %d", status.IssueNumber)
+	}
+}
+
+func TestGetPRStatusInRepo_NoIssueReference(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/pulls/31", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"number":    31,
+			"title":     "Unrelated cleanup",
+			"body":      "No issue reference",
+			"additions": 1,
+			"deletions": 1,
+			"head":      map[string]any{"sha": "sha31"},
+		})
+	})
+	mux.HandleFunc("/repos/owner/repo/pulls/31/files", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/repos/owner/repo/commits/sha31/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"state": "success"})
+	})
+
+	client, teardown := newTestClient(t, mux)
+	defer teardown()
+
+	status, err := client.GetPRStatusInRepo(31, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status.IssueNumber != 0 {
+		t.Errorf("expected IssueNumber 0, got %d", status.IssueNumber)
 	}
 }

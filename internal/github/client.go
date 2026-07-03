@@ -82,11 +82,12 @@ type PRFile struct {
 }
 
 type PRStatus struct {
-	Number    int
-	Additions int
-	Deletions int
-	Files     []PRFile
-	CIPassing bool
+	Number      int
+	Additions   int
+	Deletions   int
+	Files       []PRFile
+	CIPassing   bool
+	IssueNumber int // issue number detected from the PR body/title; 0 means not detected
 }
 
 type Client struct {
@@ -215,6 +216,46 @@ func (c *Client) ListOpenPRs(issueNum int) ([]PRInfo, error) {
 	return result, nil
 }
 
+// CountPRsForIssue returns the total number of pull requests, in any state
+// (open, closed, merged), whose title or body references the given issue
+// number. Used to detect when an issue required multiple attempted PRs.
+//
+// It pages through all results rather than stopping at the first page: with
+// no explicit sort order the GitHub API returns the 100 most-recently-created
+// PRs per page, so a single-page fetch would silently undercount once the
+// repo accumulates more than 100 PRs (older PRs referencing this issue would
+// never be seen).
+func (c *Client) CountPRsForIssue(issueNum int) (int, error) {
+	if issueNum <= 0 {
+		return 0, nil
+	}
+	count := 0
+	opts := &gogithub.PullRequestListOptions{
+		State:       "all",
+		ListOptions: gogithub.ListOptions{PerPage: 100},
+	}
+	for {
+		prs, resp, err := c.gh.PullRequests.List(context.Background(), c.owner, c.repo, opts)
+		if err != nil {
+			return 0, err
+		}
+		for _, pr := range prs {
+			detected := extractIssueNumber(pr.GetBody())
+			if detected == 0 {
+				detected = extractIssueNumber(pr.GetTitle())
+			}
+			if detected == issueNum {
+				count++
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return count, nil
+}
+
 // resolveRepo returns the owner/repo pair to use for an API call.
 // If the provided owner or repo strings are empty, the client's primary values
 // are used instead.
@@ -274,12 +315,18 @@ func (c *Client) GetPRStatusInRepo(number int, owner, repo string) (*PRStatus, e
 		ciPassing = false
 	}
 
+	issueNum := extractIssueNumber(pr.GetBody())
+	if issueNum == 0 {
+		issueNum = extractIssueNumber(pr.GetTitle())
+	}
+
 	return &PRStatus{
-		Number:    number,
-		Additions: pr.GetAdditions(),
-		Deletions: pr.GetDeletions(),
-		Files:     prFiles,
-		CIPassing: ciPassing,
+		Number:      number,
+		Additions:   pr.GetAdditions(),
+		Deletions:   pr.GetDeletions(),
+		Files:       prFiles,
+		CIPassing:   ciPassing,
+		IssueNumber: issueNum,
 	}, nil
 }
 
@@ -290,24 +337,142 @@ func (c *Client) IsCIPassing(prNumber int, sha string) (bool, error) {
 // IsCIPassingInRepo checks CI status for a specific repo. Pass empty strings
 // to use the client's primary owner/repo.
 //
+// CI status is derived from two independent GitHub APIs, since GitHub Actions
+// results are exposed as "check-runs" (Checks API) rather than legacy commit
+// statuses (Status API) — a repo using Actions-based CI (the common case)
+// will have zero legacy commit statuses, so relying on the Status API alone
+// makes this always report "no CI configured".
+//
 // Returns true when:
-//   - state == "success" (all checks passed)
-//   - state == "" (no state set)
-//   - total_count == 0 (no CI checks configured; treat as passing so repos
-//     without CI are not permanently blocked from auto-merge)
+//   - all legacy commit statuses (if any) report state == "success", AND
+//   - all check-runs (if any) are "completed" with a non-blocking conclusion
+//     ("success", "neutral", or "skipped"), AND
+//   - there is at least one status/check-run — OR there are truly zero of
+//     both (no CI configured at all; treat as passing so repos without any
+//     CI are not permanently blocked from auto-merge).
+//
+// A check-run that hasn't completed yet ("queued"/"in_progress") counts as
+// not-passing (pending), not as a failure and not as a success.
 func (c *Client) IsCIPassingInRepo(prNumber int, sha, owner, repo string) (bool, error) {
 	owner, repo = c.resolveRepo(owner, repo)
-	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
+	result, err := c.fetchCombinedCIStatus(context.Background(), owner, repo, sha)
 	if err != nil {
 		return false, err
 	}
-	// No checks configured — GitHub returns state "pending" with total_count 0.
-	// Treat this as passing so repos without CI are not blocked from auto-merge.
-	if status.GetTotalCount() == 0 {
-		return true, nil
+	return result.Passing, nil
+}
+
+// combinedCIResult holds the merged CI status computed from both the legacy
+// Commit Status API and the GitHub Actions Checks API for a single ref.
+type combinedCIResult struct {
+	Passing    bool
+	State      string
+	TotalCount int
+	Checks     []CICheckResult
+	FailedOnly []CICheckResult
+}
+
+// checkRunResultState maps a GitHub Actions check-run's status/conclusion
+// into the same "success"/"failure"/"pending" vocabulary used for legacy
+// commit statuses, so callers (and the CICheckResult JSON shape) don't need
+// to special-case check-runs.
+//
+// "neutral" and "skipped" conclusions are treated as success because GitHub
+// itself does not block merges on them. A check-run that hasn't completed
+// yet ("queued"/"in_progress") maps to "pending".
+func checkRunResultState(run *gogithub.CheckRun) string {
+	if run.GetStatus() != "completed" {
+		return "pending"
 	}
-	state := status.GetState()
-	return state == "success" || state == "", nil
+	switch run.GetConclusion() {
+	case "success", "neutral", "skipped":
+		return "success"
+	default:
+		return "failure"
+	}
+}
+
+// fetchCombinedCIStatus fetches both legacy commit statuses and GitHub
+// Actions check-runs for the given ref and combines them into a single
+// result. It is the shared implementation behind IsCIPassingInRepo and
+// GetCIDetailsInRepo so the combination logic only lives in one place.
+func (c *Client) fetchCombinedCIStatus(ctx context.Context, owner, repo, ref string) (*combinedCIResult, error) {
+	status, _, err := c.gh.Repositories.GetCombinedStatus(ctx, owner, repo, ref, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get combined status: %w", err)
+	}
+
+	checkRunsResult, _, err := c.gh.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list check runs: %w", err)
+	}
+	var checkRuns []*gogithub.CheckRun
+	if checkRunsResult != nil {
+		checkRuns = checkRunsResult.CheckRuns
+	}
+
+	// Legacy commit-status passing, preserving the original semantics:
+	// total_count == 0 means no legacy statuses at all (not a failure signal).
+	totalStatuses := status.GetTotalCount()
+	legacyState := status.GetState()
+	legacyPassing := totalStatuses == 0 || legacyState == "success" || legacyState == ""
+
+	var checks []CICheckResult
+	for _, s := range status.Statuses {
+		checks = append(checks, CICheckResult{
+			Name:        s.GetContext(),
+			State:       s.GetState(),
+			Description: s.GetDescription(),
+			TargetURL:   s.GetTargetURL(),
+		})
+	}
+
+	checkRunsPassing := true
+	for _, run := range checkRuns {
+		state := checkRunResultState(run)
+		if state != "success" {
+			checkRunsPassing = false
+		}
+		checks = append(checks, CICheckResult{
+			Name:        run.GetName(),
+			State:       state,
+			Description: run.GetOutput().GetSummary(),
+			TargetURL:   run.GetHTMLURL(),
+		})
+	}
+
+	var failed []CICheckResult
+	for _, ch := range checks {
+		if ch.State == "failure" || ch.State == "error" {
+			failed = append(failed, ch)
+		}
+	}
+
+	total := totalStatuses + len(checkRuns)
+	passing := legacyPassing && checkRunsPassing
+
+	// Derive an overall state string. Kept aligned with the legacy status
+	// semantics when there's no check-run signal to add, but reflects the
+	// combined result once check-runs are in play.
+	var state string
+	switch {
+	case total == 0:
+		state = ""
+	case passing:
+		state = "success"
+	case len(failed) > 0:
+		state = "failure"
+	default:
+		state = "pending"
+	}
+
+	return &combinedCIResult{
+		Passing:    passing,
+		State:      state,
+		TotalCount: total,
+		Checks:     checks,
+		FailedOnly: failed,
+	}, nil
 }
 
 // CICheckResult holds information about a single CI check.
@@ -346,39 +511,19 @@ func (c *Client) GetCIDetailsInRepo(prNumber int, owner, repo string) (*CIDetail
 	}
 	sha := pr.GetHead().GetSHA()
 
-	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
+	result, err := c.fetchCombinedCIStatus(context.Background(), owner, repo, sha)
 	if err != nil {
-		return nil, fmt.Errorf("get combined status: %w", err)
-	}
-
-	state := status.GetState()
-	passing := state == "success" || state == ""
-
-	var checks []CICheckResult
-	for _, s := range status.Statuses {
-		checks = append(checks, CICheckResult{
-			Name:        s.GetContext(),
-			State:       s.GetState(),
-			Description: s.GetDescription(),
-			TargetURL:   s.GetTargetURL(),
-		})
-	}
-
-	var failed []CICheckResult
-	for _, ch := range checks {
-		if ch.State == "failure" || ch.State == "error" {
-			failed = append(failed, ch)
-		}
+		return nil, err
 	}
 
 	return &CIDetails{
 		PRNumber:   prNumber,
 		SHA:        sha,
-		State:      state,
-		Passing:    passing,
-		TotalCount: len(checks),
-		Checks:     checks,
-		FailedOnly: failed,
+		State:      result.State,
+		Passing:    result.Passing,
+		TotalCount: result.TotalCount,
+		Checks:     result.Checks,
+		FailedOnly: result.FailedOnly,
 	}, nil
 }
 
@@ -406,6 +551,26 @@ func (c *Client) PostCommentInRepo(number int, body, owner, repo string) error {
 	comment := &gogithub.IssueComment{Body: gogithub.String(body)}
 	_, _, err := c.gh.Issues.CreateComment(context.Background(), owner, repo, number, comment)
 	return err
+}
+
+// CreateIssue opens a new issue on the client's primary repository and
+// returns its issue number.
+func (c *Client) CreateIssue(title, body string) (int, error) {
+	return c.CreateIssueInRepo(title, body, "", "")
+}
+
+// CreateIssueInRepo opens a new issue in a specific repo. Pass empty strings
+// to use the client's primary owner/repo.
+func (c *Client) CreateIssueInRepo(title, body, owner, repo string) (int, error) {
+	owner, repo = c.resolveRepo(owner, repo)
+	issue, _, err := c.gh.Issues.Create(context.Background(), owner, repo, &gogithub.IssueRequest{
+		Title: gogithub.String(title),
+		Body:  gogithub.String(body),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return issue.GetNumber(), nil
 }
 
 func (c *Client) FindPRForBranch(branch string) (int, error) {
@@ -443,7 +608,14 @@ func (c *Client) CloseIssueInRepo(number int, comment, owner, repo string) error
 // HasCommentMatching returns true when any comment on the given issue contains
 // the provided trigger string (case-insensitive substring match).
 func (c *Client) HasCommentMatching(number int, trigger string) (bool, error) {
-	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, number, nil)
+	return c.HasCommentMatchingInRepo(number, trigger, "", "")
+}
+
+// HasCommentMatchingInRepo is the repo-aware variant of HasCommentMatching.
+// Pass empty strings to use the client's primary owner/repo.
+func (c *Client) HasCommentMatchingInRepo(number int, trigger, owner, repo string) (bool, error) {
+	owner, repo = c.resolveRepo(owner, repo)
+	comments, _, err := c.gh.Issues.ListComments(context.Background(), owner, repo, number, nil)
 	if err != nil {
 		return false, err
 	}
@@ -454,6 +626,21 @@ func (c *Client) HasCommentMatching(number int, trigger string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// AddLabel adds a label to an issue in the client's primary repo.
+func (c *Client) AddLabel(number int, label string) error {
+	return c.AddLabelInRepo(number, label, "", "")
+}
+
+// AddLabelInRepo adds a label to an issue in a specific repo. Pass empty
+// strings to use the client's primary owner/repo. Adding a label an issue
+// already has is a no-op on GitHub's side, so this is safe to call
+// repeatedly (idempotent).
+func (c *Client) AddLabelInRepo(number int, label, owner, repo string) error {
+	owner, repo = c.resolveRepo(owner, repo)
+	_, _, err := c.gh.Issues.AddLabelsToIssue(context.Background(), owner, repo, number, []string{label})
+	return err
 }
 
 // GetIssueComments returns all comments on the given issue number.

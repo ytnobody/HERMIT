@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -15,21 +14,56 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/git"
+	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/mcp"
 	"github.com/ytnobody/hermit/internal/permissions"
+	"github.com/ytnobody/hermit/internal/readiness"
+	"github.com/ytnobody/hermit/internal/requirements"
+	"github.com/ytnobody/hermit/internal/risk"
 )
 
 //go:embed templates/* templates/commands/*
 var templateFS embed.FS
 
 // RepoConfig holds the owner, repo, and optional label filter for a single
-// repository entry in the [[repos]] array.
+// repository entry in the [[repos]] array. Risk optionally overrides the
+// top-level [risk] section for this repo only (multi-repo mode).
 type RepoConfig struct {
-	Owner string `toml:"owner"`
-	Repo  string `toml:"repo"`
-	Label string `toml:"label"`
+	Owner string     `toml:"owner"`
+	Repo  string     `toml:"repo"`
+	Label string     `toml:"label"`
+	Risk  RiskConfig `toml:"risk"`
+}
+
+// RiskConfig maps the [risk] (and per-repo [repos.risk]) harness.toml
+// section onto internal/risk.Config. Any field left unset (empty slice or
+// zero threshold) falls back to the parent level's value: [repos.risk] falls
+// back to [risk], which itself falls back to risk.DefaultConfig().
+type RiskConfig struct {
+	HighPaths   []string `toml:"high_paths"`
+	MediumPaths []string `toml:"medium_paths"`
+	// ExcludePaths lists path prefixes (e.g. scaffold/template directories)
+	// that never contribute a path-based HIGH/MEDIUM signal, even if they
+	// also fall under a HighPaths/MediumPaths prefix. See risk.Config.
+	ExcludePaths        []string `toml:"exclude_paths"`
+	HighFileThreshold   int      `toml:"high_file_threshold"`
+	HighLineThreshold   int      `toml:"high_line_threshold"`
+	MediumFileThreshold int      `toml:"medium_file_threshold"`
+	MediumLineThreshold int      `toml:"medium_line_threshold"`
+}
+
+// toRiskConfig converts a RiskConfig (TOML shape) into a risk.Config.
+func (r RiskConfig) toRiskConfig() risk.Config {
+	return risk.Config{
+		HighPaths:           r.HighPaths,
+		MediumPaths:         r.MediumPaths,
+		ExcludePaths:        r.ExcludePaths,
+		HighFileThreshold:   r.HighFileThreshold,
+		HighLineThreshold:   r.HighLineThreshold,
+		MediumFileThreshold: r.MediumFileThreshold,
+		MediumLineThreshold: r.MediumLineThreshold,
+	}
 }
 
 type Config struct {
@@ -42,39 +76,131 @@ type Config struct {
 	// Repos overrides the single [github] section when present.
 	Repos []RepoConfig `toml:"repos"`
 	Agent struct {
-		MaxEngineers    int    `toml:"max_engineers"`
-		Language        string `toml:"language"`
-		BranchPrefix    string `toml:"branch_prefix"`
-		LoopInterval    int    `toml:"loop_interval"`
-		TriggerComment  string `toml:"trigger_comment"`
+		MaxEngineers   int    `toml:"max_engineers"`
+		Language       string `toml:"language"`
+		BranchPrefix   string `toml:"branch_prefix"`
+		LoopInterval   int    `toml:"loop_interval"`
+		TriggerComment string `toml:"trigger_comment"`
 	} `toml:"agent"`
 	Model struct {
 		Superintendent string `toml:"superintendent"`
 		Engineer       string `toml:"engineer"`
+		// Analyst configures the model used for the Analyst (PM) role, which
+		// translates ambiguous human requirements gathered in the standing
+		// requirements-hearing Issue into REQ-ID formatted requirements-doc
+		// updates. Optional; when empty, resolveAnalystModel falls back to
+		// Superintendent for backward compatibility with harness.toml files
+		// written before the Analyst role existed.
+		Analyst string `toml:"analyst"`
+		// SuperintendentEffort/EngineerEffort/AnalystEffort configure the
+		// Claude Agent tool's reasoning effort (e.g. low/medium/high/xhigh/max)
+		// for the Superintendent, Engineer, and Analyst roles respectively.
+		// All are optional; when empty, no effort is specified and the
+		// caller's default applies.
+		SuperintendentEffort string `toml:"superintendent_effort"`
+		EngineerEffort       string `toml:"engineer_effort"`
+		AnalystEffort        string `toml:"analyst_effort"`
 	} `toml:"model"`
 	Notification struct {
 		WebhookURL string `toml:"webhook_url"`
 		Type       string `toml:"type"`
 	} `toml:"notification"`
+	// Risk configures the risk-evaluation policy (see internal/risk.Config).
+	// Any field left unset falls back to risk.DefaultConfig(). [[repos]]
+	// entries may further override this via their own `risk` sub-table.
+	Risk      RiskConfig `toml:"risk"`
+	Readiness struct {
+		// MinBodyLength is the minimum number of non-whitespace characters an
+		// Issue body must contain to be considered ready for implementation.
+		// Defaults to readiness.DefaultMinBodyLength when <= 0.
+		MinBodyLength int `toml:"min_body_length"`
+		// SkipAcceptanceCriteriaCheck disables the requirement that the Issue
+		// body contain an acceptance-criteria-like section. Defaults to false
+		// (i.e. the check is enabled) so the zero value is safe.
+		SkipAcceptanceCriteriaCheck bool `toml:"skip_acceptance_criteria_check"`
+		// Label is the GitHub label applied to Issues judged not ready, and
+		// used to exclude them from list_issues. Defaults to
+		// readiness.DefaultLabel when empty.
+		Label string `toml:"label"`
+	} `toml:"readiness"`
+	Requirements struct {
+		// Doc is the path (relative to the project root) to the requirements
+		// document parsed for "## REQ-xxx: ..." blocks. Defaults to
+		// "REQUIREMENTS.md" when empty.
+		Doc string `toml:"doc"`
+		// TestCommand is a shell command template used to check whether a
+		// given requirement's test exists and passes. "{req_id}" is
+		// substituted with the requirement's ID, e.g.:
+		//   test_command = "go test ./... -run '^{req_id}' -v"
+		// The template's output must include "=== RUN" markers (i.e.
+		// `go test -v` style output) for every test that matched, so the
+		// reconcile sweep can distinguish "no such test" from "test failed".
+		TestCommand string `toml:"test_command"`
+		// Paths lists candidate requirements-document locations (relative to
+		// the project root); the project is considered to have a
+		// requirements document if any one of them exists. Checked once at
+		// `hermit serve` startup (see runRequirementsHearingCheck) — this is
+		// Issue #104's precondition gate, distinct from (but complementary
+		// to) the Doc field above used by the #106 reconcile sweep.
+		//
+		// Default when empty: falls back to Doc (if set), otherwise to
+		// requirements.DefaultHearingPaths ("REQUIREMENTS.md" and
+		// "docs/requirements.md"). This check is enabled by default — an
+		// unconfigured [requirements] section is NOT a no-op — so every
+		// project gets the guard against missing requirements docs without
+		// needing to opt in.
+		Paths []string `toml:"paths"`
+	} `toml:"requirements"`
 }
 
-// ModelPreset defines superintendent/engineer model combinations.
+// resolveRiskConfig builds the effective default risk.Config (harness.toml's
+// [risk] section layered over risk.DefaultConfig()) and, in multi-repo mode,
+// a map of per-repo overrides keyed by "owner/repo" (layered over the
+// resolved default).
+func resolveRiskConfig(cfg Config) (risk.Config, map[string]risk.Config) {
+	def := risk.Merge(risk.DefaultConfig(), cfg.Risk.toRiskConfig())
+
+	var repoConfigs map[string]risk.Config
+	for _, r := range cfg.Repos {
+		merged := risk.Merge(def, r.Risk.toRiskConfig())
+		if repoConfigs == nil {
+			repoConfigs = make(map[string]risk.Config, len(cfg.Repos))
+		}
+		repoConfigs[r.Owner+"/"+r.Repo] = merged
+	}
+	return def, repoConfigs
+}
+
+// ModelPreset defines superintendent/engineer/analyst model combinations.
+// SuperintendentEffort/EngineerEffort/AnalystEffort are optional
+// reasoning-effort defaults (low/medium/high/xhigh/max) applied for each
+// role; an empty value means no effort is specified and the caller's default
+// applies. Analyst defaults to a higher-tier model than Engineer because
+// misinterpreting ambiguous human language into REQ-ID requirements cascades
+// directly into implementation effort downstream (see issue #107).
 type ModelPreset struct {
-	Superintendent string
-	Engineer       string
-	Description    string
+	Superintendent       string
+	Engineer             string
+	Analyst              string
+	SuperintendentEffort string
+	EngineerEffort       string
+	AnalystEffort        string
+	Description          string
 }
 
 var modelPresets = map[string]ModelPreset{
 	"claude": {
-		Superintendent: "claude-sonnet-4-5",
-		Engineer:       "claude-sonnet-4-5",
-		Description:    "Sonnet for both Superintendent and Engineer (balanced)",
+		Superintendent: "claude-sonnet-5",
+		Engineer:       "claude-sonnet-5",
+		Analyst:        "claude-opus-4-8",
+		AnalystEffort:  "high",
+		Description:    "Sonnet for Superintendent/Engineer, Opus for Analyst (balanced)",
 	},
 	"claude-cheap": {
-		Superintendent: "claude-sonnet-4-5",
-		Engineer:       "claude-haiku-4-5",
-		Description:    "Sonnet for Superintendent, Haiku for Engineers (cost-optimized)",
+		Superintendent: "claude-sonnet-5",
+		Engineer:       "claude-haiku-4-5-20251001",
+		Analyst:        "claude-sonnet-5",
+		Description:    "Sonnet for Superintendent/Analyst, Haiku for Engineers (cost-optimized)",
 	},
 }
 
@@ -94,6 +220,8 @@ func main() {
 		cmdPause()
 	case "resume":
 		cmdResume()
+	case "quit":
+		cmdQuit()
 	case "status":
 		cmdStatus()
 	case "use":
@@ -124,10 +252,18 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|status|use|version|upgrade|cleanup|doctor|dry-run>")
+	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|quit|status|use|version|upgrade|cleanup|doctor|dry-run>")
 }
 
 const pauseFile = ".hermit-paused"
+
+// quitFile is a terminal flag file: unlike pauseFile (which is meant to be
+// resumed via `hermit resume`), quitFile signals that the Superintendent's
+// `/loop` should stop entirely — the loop must not call ScheduleWakeup again
+// once this file is present. There is no `hermit unquit`; starting a fresh
+// `/hermit` run again is the intended way to resume autonomous operation
+// after a quit.
+const quitFile = ".hermit-quit"
 
 func cmdPause() {
 	f, err := os.Create(pauseFile)
@@ -149,7 +285,20 @@ func cmdResume() {
 	fmt.Println("▶  Autonomous operation resumed.")
 }
 
+func cmdQuit() {
+	f, err := os.Create(quitFile)
+	if err != nil {
+		fatal(err.Error())
+	}
+	f.Close()
+	fmt.Println("⏹  Autonomous operation quit requested. The Superintendent loop will stop at the start of its next cycle and will not reschedule itself.")
+}
+
 func cmdStatus() {
+	if _, err := os.Stat(quitFile); err == nil {
+		fmt.Println("⏹  quit requested (loop will stop)")
+		return
+	}
 	if _, err := os.Stat(pauseFile); err == nil {
 		fmt.Println("⏸  paused")
 	} else {
@@ -185,6 +334,16 @@ func cmdUse(presetName string) {
 	}
 	modelSection["superintendent"] = preset.Superintendent
 	modelSection["engineer"] = preset.Engineer
+	modelSection["analyst"] = preset.Analyst
+	if preset.SuperintendentEffort != "" {
+		modelSection["superintendent_effort"] = preset.SuperintendentEffort
+	}
+	if preset.EngineerEffort != "" {
+		modelSection["engineer_effort"] = preset.EngineerEffort
+	}
+	if preset.AnalystEffort != "" {
+		modelSection["analyst_effort"] = preset.AnalystEffort
+	}
 	cfg["model"] = modelSection
 
 	f, err := os.Create(harnessFile)
@@ -199,6 +358,16 @@ func cmdUse(presetName string) {
 	fmt.Printf("✓ preset %q applied\n", presetName)
 	fmt.Printf("  superintendent: %s\n", preset.Superintendent)
 	fmt.Printf("  engineer:       %s\n", preset.Engineer)
+	fmt.Printf("  analyst:        %s\n", preset.Analyst)
+	if preset.SuperintendentEffort != "" {
+		fmt.Printf("  superintendent_effort: %s\n", preset.SuperintendentEffort)
+	}
+	if preset.EngineerEffort != "" {
+		fmt.Printf("  engineer_effort:       %s\n", preset.EngineerEffort)
+	}
+	if preset.AnalystEffort != "" {
+		fmt.Printf("  analyst_effort:        %s\n", preset.AnalystEffort)
+	}
 }
 
 func githubToken() string {
@@ -228,6 +397,28 @@ func resolveBranchPrefix(cfg Config) string {
 		return "hermit"
 	}
 	return "hermit/" + login
+}
+
+// resolveAnalystModel returns the model configured for the Analyst role.
+// Falls back to the Superintendent model when [model].analyst is unset, so
+// that harness.toml files written before the Analyst role was introduced
+// (issue #107) keep working without modification.
+func resolveAnalystModel(cfg Config) string {
+	if cfg.Model.Analyst != "" {
+		return cfg.Model.Analyst
+	}
+	return cfg.Model.Superintendent
+}
+
+// resolveAnalystEffort returns the reasoning effort configured for the
+// Analyst role. Falls back to the Superintendent's effort when
+// [model].analyst_effort is unset, mirroring resolveAnalystModel's
+// backward-compatibility fallback.
+func resolveAnalystEffort(cfg Config) string {
+	if cfg.Model.AnalystEffort != "" {
+		return cfg.Model.AnalystEffort
+	}
+	return cfg.Model.SuperintendentEffort
 }
 
 func cmdServe() {
@@ -267,15 +458,153 @@ func cmdServe() {
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	prefix := resolveBranchPrefix(cfg)
 
+	runRequirementsHearingCheck(rootDir, cfg, client)
+	runRequirementsSweep(rootDir, cfg, client)
+
 	// Convert []RepoConfig → []gh.RepoConfig for the MCP layer.
 	var repos []gh.RepoConfig
 	for _, r := range cfg.Repos {
 		repos = append(repos, gh.RepoConfig{Owner: r.Owner, Repo: r.Repo, Label: r.Label})
 	}
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment); err != nil {
+	readinessCfg := readiness.Config{
+		MinBodyLength:             cfg.Readiness.MinBodyLength,
+		RequireAcceptanceCriteria: !cfg.Readiness.SkipAcceptanceCriteriaCheck,
+		Label:                     cfg.Readiness.Label,
+	}
+
+	defaultRiskCfg, repoRiskCfgs := resolveRiskConfig(cfg)
+
+	requirementsCfg := mcp.RequirementsConfig{
+		Doc:         resolveRequirementsDoc(cfg),
+		TestCommand: cfg.Requirements.TestCommand,
+	}
+
+	model := mcp.ModelConfig{
+		Superintendent:       cfg.Model.Superintendent,
+		Engineer:             cfg.Model.Engineer,
+		Analyst:              resolveAnalystModel(cfg),
+		SuperintendentEffort: cfg.Model.SuperintendentEffort,
+		EngineerEffort:       cfg.Model.EngineerEffort,
+		AnalystEffort:        resolveAnalystEffort(cfg),
+	}
+
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model, requirementsCfg); err != nil {
 		fatal(err.Error())
 	}
+}
+
+// resolveHearingPaths returns the effective list of candidate
+// requirements-document paths used by runRequirementsHearingCheck.
+//
+//  1. [requirements].paths, if explicitly set, is used as-is.
+//  2. Otherwise, [requirements].doc, if set (even though it's primarily
+//     consumed by the #106 reconcile sweep), is used as the sole candidate —
+//     a project that has already configured a non-default doc path
+//     shouldn't be told it's missing a requirements doc just because that
+//     path isn't one of the hard-coded defaults.
+//  3. Otherwise, requirements.DefaultHearingPaths is used.
+func resolveHearingPaths(cfg Config) []string {
+	if len(cfg.Requirements.Paths) > 0 {
+		return cfg.Requirements.Paths
+	}
+	if cfg.Requirements.Doc != "" {
+		return []string{cfg.Requirements.Doc}
+	}
+	return requirements.DefaultHearingPaths
+}
+
+// runRequirementsHearingCheck implements Issue #104's deterministic,
+// idempotent precondition check: at `hermit serve` startup, verify that a
+// requirements document exists at one of the configured (or default)
+// candidate paths. If none exists, open exactly one "requirements hearing"
+// Issue (deduped by the requirements.HearingLabel label) asking a human for
+// the project's purpose, scope, acceptance criteria, and out-of-scope items.
+//
+// This check never depends on LLM judgment — existence is a plain os.Stat,
+// and dedup is a plain GitHub label query — and it never blocks normal Issue
+// processing: it only ever creates a separate, clearly-labeled Issue that
+// list_issues excludes from the Engineer queue (see internal/mcp/tools.go).
+//
+// Like runRequirementsSweep, this is best-effort: any error is logged rather
+// than fatal, since a hearing-check failure (e.g. a transient GitHub API
+// error) must never prevent `hermit serve` from starting.
+func runRequirementsHearingCheck(rootDir string, cfg Config, client *gh.Client) {
+	paths := resolveHearingPaths(cfg)
+	if requirements.DocExists(rootDir, paths) {
+		return
+	}
+
+	created, err := requirements.EnsureHearingIssue(client)
+	if err != nil {
+		log.Printf("requirements hearing: %v", err)
+		return
+	}
+	if created {
+		log.Printf("requirements hearing: no requirements document found at %v; opened an issue labeled %q", paths, requirements.HearingLabel)
+	}
+}
+
+// defaultRequirementsDoc is the requirements-document path used when
+// [requirements].doc is not set in harness.toml.
+const defaultRequirementsDoc = "REQUIREMENTS.md"
+
+// resolveRequirementsDoc returns the effective requirements-document path
+// (relative to the project root) used by both the startup reconcile sweep
+// and the run_requirements_sweep MCP tool: [requirements].doc when set,
+// otherwise defaultRequirementsDoc.
+func resolveRequirementsDoc(cfg Config) string {
+	if cfg.Requirements.Doc != "" {
+		return cfg.Requirements.Doc
+	}
+	return defaultRequirementsDoc
+}
+
+// runRequirementsSweep runs the requirements reconcile sweep (Issue #106) at
+// `hermit serve` startup: it parses the requirements document for "## REQ-xxx:"
+// blocks, runs each requirement's test via the configured test_command, and
+// opens (deduped) GitHub issues for requirements that are unimplemented,
+// regressed, or whose text changed since the last sweep.
+//
+// This is intentionally best-effort: a project that hasn't adopted the
+// requirements-doc format yet (no doc file, or no test_command configured)
+// simply skips the sweep, and any sweep error is logged rather than fatal —
+// it must never prevent `hermit serve` from starting.
+//
+// The actual sweep-running logic lives in requirements.RunReconcileSweep so
+// that it is shared, unduplicated, with the run_requirements_sweep MCP tool
+// (internal/mcp/tools.go) added by Issue #128 — that tool lets the
+// Superintendent re-run this same sweep periodically (roughly hourly) from
+// within its own patrol loop, rather than only once at process startup.
+func runRequirementsSweep(rootDir string, cfg Config, client *gh.Client) {
+	docPath := resolveRequirementsDoc(cfg)
+
+	summary, err := requirements.RunReconcileSweep(rootDir, docPath, cfg.Requirements.TestCommand, requirements.NewGitHubIssueClient(client))
+	if err != nil {
+		log.Printf("requirements sweep: %v", err)
+		return
+	}
+	if summary.Skipped {
+		// Quiet skips (no doc yet, or a doc with no REQ-ID blocks yet) stay
+		// silent at startup, matching the original behavior of this
+		// function — most projects haven't adopted the requirements-doc
+		// workflow yet, and logging about that on every `hermit serve`
+		// start would just be noise. Non-quiet skips (e.g. a doc exists but
+		// test_command isn't configured) are still worth a log line since
+		// they indicate a fixable misconfiguration.
+		if !summary.Quiet {
+			log.Printf("requirements sweep: %s; skipping", summary.SkipReason)
+		}
+		return
+	}
+
+	for _, r := range summary.Results {
+		if r.IssueCreated {
+			log.Printf("requirements sweep: opened %s issue for %s", r.IssueKind, r.ReqID)
+		}
+	}
+	log.Printf("requirements sweep: %d satisfied, %d unimplemented, %d regressed, %d skipped (manual), %d issue(s) opened",
+		summary.Satisfied, summary.Unimplemented, summary.Regressed, summary.SkippedManual, summary.IssuesOpened)
 }
 
 func cmdCleanup() {
@@ -325,52 +654,30 @@ func cmdInstall() {
 		fatal("harness.toml not found. Please run `hermit install` from the project root.")
 	}
 
-	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
-
-	data, err := os.ReadFile(settingsPath)
-	if err != nil && !os.IsNotExist(err) {
-		fatal(err.Error())
+	// Register hermit as a project-local MCP server through the Claude Code
+	// CLI itself. Claude Code does NOT read MCP server definitions from
+	// ~/.claude/settings.json — only from ~/.claude.json (managed via
+	// `claude mcp add`) or a project .mcp.json file, so registration must go
+	// through the officially supported `claude mcp add` command rather than
+	// hand-writing Claude Code's internal config format.
+	addArgs := []string{
+		"mcp", "add", "hermit",
+		"-s", "local",
+		"-e", "GITHUB_TOKEN=${GITHUB_TOKEN}",
+		"-e", "HERMIT_PROJECT_DIR=" + cwd,
+		"--", execPath, "serve",
 	}
-
-	var settings map[string]any
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &settings); err != nil {
-			fatal("failed to parse settings.json: " + err.Error())
-		}
-	} else {
-		settings = make(map[string]any)
+	if out, err := exec.Command("claude", addArgs...).CombinedOutput(); err != nil {
+		fatal("failed to register MCP server via `claude mcp add`: " + err.Error() + "\n" + string(out))
 	}
-
-	mcpServers, _ := settings["mcpServers"].(map[string]any)
-	if mcpServers == nil {
-		mcpServers = make(map[string]any)
-	}
-	mcpServers["hermit"] = map[string]any{
-		"command": execPath,
-		"args":    []string{"serve"},
-		"cwd":     cwd,
-		"env": map[string]string{
-			"GITHUB_TOKEN":      "${GITHUB_TOKEN}",
-			"HERMIT_PROJECT_DIR": cwd,
-		},
-	}
-	settings["mcpServers"] = mcpServers
-
-	b, _ := json.MarshalIndent(settings, "", "  ") // map[string]any is always serialisable
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
-		fatal(err.Error())
-	}
-	if err := os.WriteFile(settingsPath, append(b, '\n'), 0o644); err != nil {
-		fatal(err.Error())
-	}
-	fmt.Println("✓ HERMIT MCP server registered in", settingsPath)
+	fmt.Println("✓ HERMIT MCP server registered with Claude Code (run `claude mcp list` to verify)")
 
 	// Install slash commands into the project's .claude/commands/ directory.
 	commandsDir := filepath.Join(cwd, ".claude", "commands")
 	if err := os.MkdirAll(commandsDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not create %s: %v\n", commandsDir, err)
 	} else {
-		cmdFiles := []string{"hermit.md", "hermit-pause.md", "hermit-resume.md"}
+		cmdFiles := []string{"hermit.md", "hermit-pause.md", "hermit-resume.md", "hermit-quit.md"}
 		allOK := true
 		for _, name := range cmdFiles {
 			src := "templates/commands/" + name
@@ -435,28 +742,51 @@ func cmdInit() {
 		preset = modelPresets["claude"]
 	}
 
+	supEffort := promptDefault(sc, "Superintendent reasoning effort [low/medium/high/xhigh/max] (optional, default: none): ", preset.SuperintendentEffort)
+	engEffort := promptDefault(sc, "Engineer reasoning effort [low/medium/high/xhigh/max] (optional, default: none): ", preset.EngineerEffort)
+	analystEffort := promptDefault(sc, "Analyst reasoning effort [low/medium/high/xhigh/max] (optional, press Enter for preset default): ", preset.AnalystEffort)
+
 	type tmplData struct {
-		Owner               string
-		Repo                string
-		Language            string
-		MaxEngineers        int
-		SuperintendentModel string
-		EngineerModel       string
+		Owner                string
+		Repo                 string
+		Language             string
+		MaxEngineers         int
+		SuperintendentModel  string
+		EngineerModel        string
+		AnalystModel         string
+		SuperintendentEffort string
+		EngineerEffort       string
+		AnalystEffort        string
 	}
 	data := tmplData{
-		Owner:               owner,
-		Repo:                repo,
-		Language:            lang,
-		MaxEngineers:        maxEng,
-		SuperintendentModel: preset.Superintendent,
-		EngineerModel:       preset.Engineer,
+		Owner:                owner,
+		Repo:                 repo,
+		Language:             lang,
+		MaxEngineers:         maxEng,
+		SuperintendentModel:  preset.Superintendent,
+		EngineerModel:        preset.Engineer,
+		AnalystModel:         preset.Analyst,
+		SuperintendentEffort: supEffort,
+		EngineerEffort:       engEffort,
+		AnalystEffort:        analystEffort,
 	}
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
 	writeTemplate("templates/CLAUDE.md.tmpl", "CLAUDE.md", struct {
 		MaxEngineers       int
 		ProjectCodingRules string
-	}{MaxEngineers: maxEng, ProjectCodingRules: "Describe your project-specific coding guidelines here."})
+		EngineerModel      string
+		EngineerEffort     string
+		AnalystModel       string
+		AnalystEffort      string
+	}{
+		MaxEngineers:       maxEng,
+		ProjectCodingRules: "Describe your project-specific coding guidelines here.",
+		EngineerModel:      preset.Engineer,
+		EngineerEffort:     engEffort,
+		AnalystModel:       preset.Analyst,
+		AnalystEffort:      analystEffort,
+	})
 
 	// Generate .github/ISSUE_TEMPLATE/hermit-task.md for Issue creation guidance.
 	if err := writeIssueTemplate(); err != nil {
@@ -529,6 +859,12 @@ func loadConfig() Config {
 	}
 	if cfg.Agent.LoopInterval <= 0 {
 		cfg.Agent.LoopInterval = 270
+	}
+	if cfg.Readiness.MinBodyLength <= 0 {
+		cfg.Readiness.MinBodyLength = readiness.DefaultMinBodyLength
+	}
+	if cfg.Readiness.Label == "" {
+		cfg.Readiness.Label = readiness.DefaultLabel
 	}
 	return cfg
 }

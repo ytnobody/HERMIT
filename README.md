@@ -66,7 +66,7 @@ Once `/hermit` is running, just open GitHub Issues in your repository. HERMIT wi
 
 > **Note:** `install.sh` calls `hermit install` automatically, so the MCP server registration happens as part of the one-liner install command.
 
-> **Version control:** The files generated in `.claude/commands/` (`hermit.md`, `hermit-pause.md`, `hermit-resume.md`) **should be committed to git**. They are project-scoped slash commands — similar to `CLAUDE.md` — and allow all contributors using Claude Code on the same project to access `/hermit`, `/hermit-pause`, and `/hermit-resume` without running `hermit install` themselves.
+> **Version control:** The files generated in `.claude/commands/` (`hermit.md`, `hermit-pause.md`, `hermit-resume.md`, `hermit-quit.md`) **should be committed to git**. They are project-scoped slash commands — similar to `CLAUDE.md` — and allow all contributors using Claude Code on the same project to access `/hermit`, `/hermit-pause`, `/hermit-resume`, and `/hermit-quit` without running `hermit install` themselves.
 
 
 ---
@@ -101,14 +101,14 @@ Edit the "Coding Guidelines" section in `CLAUDE.md` to match your project.
 
 ## Usage
 
-Since `hermit install` registers it as an MCP server in `~/.claude/settings.json`, **Claude Code automatically starts `hermit serve` on launch**. No need to start it manually in another terminal.
+Since `hermit install` registers it as an MCP server via `claude mcp add` (project-local scope), **Claude Code automatically starts `hermit serve` on launch**. No need to start it manually in another terminal.
 
 ```
 Claude Code starts
   └─ hermit serve auto-started (MCP subprocess)
        ↓ list_issues / assign_issue / create_worktree
        ↓ Agent spawn → Engineer × N
-       ↓ evaluate_risk / merge_pr / close_worktree
+       ↓ evaluate_risk / merge_pr (auto-cleans worktree on merge)
        ↓ (repeat)
 ```
 
@@ -149,9 +149,8 @@ No further action is needed. HERMIT handles the entire development workflow auto
 2. Mark as in-progress with `assign_issue`
 3. Spawn Engineers in parallel with the Agent tool (up to `max_engineers`)
 4. Risk evaluation with `evaluate_risk`
-5. If LOW/MEDIUM, auto-merge with `merge_pr` (skip HIGH with comment)
-6. Clean up worktrees with `close_worktree`
-7. Return to step 1
+5. If LOW/MEDIUM, auto-merge with `merge_pr`, passing `worktree_path`/`branch` so the worktree is cleaned up automatically (skip HIGH with comment)
+6. Return to step 1
 
 ---
 
@@ -163,8 +162,7 @@ No further action is needed. HERMIT handles the entire development workflow auto
 | `assign_issue` | Marks an Issue as in-progress by adding a label and assigning |
 | `create_worktree` | Creates a branch and git worktree for an Issue |
 | `evaluate_risk` | Returns LOW/MEDIUM/HIGH based on PR change volume and impact area |
-| `merge_pr` | Merges after CI passes; posts a risk comment and records a lesson |
-| `close_worktree` | Removes the worktree and branch |
+| `merge_pr` | Merges after CI passes; posts a risk comment, records a lesson, and removes the worktree/branch when `worktree_path`/`branch` are provided |
 | `check_ci_status` | Checks CI/CD status for a PR; auto-posts a comment if checks are failing |
 | `add_issue_comment` | Posts a comment on an Issue or PR |
 | `get_issue_comments` | Returns comments on an Issue, optionally filtered by timestamp |
@@ -204,8 +202,21 @@ language        = "en"      # "ja" | "en"
 # trigger_comment = "/hermit"            # only process Issues that have this comment
 
 [model]
-superintendent = "claude-sonnet-4-5"   # model used for the Superintendent role
-engineer       = "claude-sonnet-4-5"   # model used for Engineer roles
+superintendent = "claude-sonnet-5"   # model used for the Superintendent role
+engineer       = "claude-sonnet-5"   # model used for Engineer roles
+
+# [risk]
+# high_paths            = ["cmd/", "go.mod", ".github/"]  # HIGH risk when a changed file matches one of these prefixes
+# medium_paths          = ["internal/"]                   # MEDIUM risk when a changed file matches one of these prefixes
+# high_file_threshold   = 20    # HIGH risk when this many or more files changed
+# high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
+# medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
+# medium_line_threshold = 200   # MEDIUM risk when this many or more lines changed
+
+# [readiness]
+# min_body_length                = 40                    # minimum non-whitespace chars required in the Issue body
+# skip_acceptance_criteria_check = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
+# label                          = "needs-clarification"  # label applied to Issues judged not ready; also excludes them from list_issues
 
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook
@@ -224,6 +235,22 @@ When `trigger_comment` is set in `harness.toml`, the Superintendent will only pi
 
 Example: set `trigger_comment = "/hermit"` and comment `/hermit` on any Issue you want HERMIT to process.
 
+### Issue Readiness Checks
+
+Before an Issue reaches the Superintendent's queue, `list_issues` runs a deterministic (non-LLM) readiness check against each Issue body — no guessing whether the requirements are clear enough, and no relying on the model to remember to ask. An Issue is judged **not ready** when:
+
+- the body is empty,
+- the body is shorter than `min_body_length` (default: 40 non-whitespace characters), or
+- the body has no acceptance-criteria-like section (an "Acceptance Criteria" / "受け入れ条件" heading), unless `skip_acceptance_criteria_check = true`.
+
+When an Issue is judged not ready, HERMIT:
+
+1. Posts a structured hearing comment asking for the four things needed to safely implement it: purpose (目的), scope (スコープ), acceptance criteria (受け入れ条件), and explicit non-goals (やらないこと). This comment is only ever posted once per Issue — a hidden marker is used to detect it on later cycles.
+2. Applies the `needs-clarification` label (configurable via `label`).
+3. Excludes the Issue from the `list_issues` result until a human removes the label (or triggers a fresh check, e.g. by posting the trigger comment).
+
+Once the requirements are filled in and the label is removed, the Issue returns to the normal queue on the next cycle.
+
 ### Model Selection
 
 The `[model]` section lets you specify which Claude model each role uses. You can also apply a preset with `hermit use`:
@@ -232,6 +259,10 @@ The `[model]` section lets you specify which Claude model each role uses. You ca
 hermit use claude        # Sonnet for both Superintendent and Engineer (balanced)
 hermit use claude-cheap  # Sonnet for Superintendent, Haiku for Engineers (cost-optimized)
 ```
+
+### Risk Policy
+
+The `[risk]` section controls how `evaluate_risk` and `merge_pr` classify a PR as LOW, MEDIUM, or HIGH risk: which path prefixes are considered high/medium risk, and the file-count/line-count thresholds for each level. Any field left unset falls back to HERMIT's built-in default (shown commented out above), so omitting `[risk]` entirely preserves the original hardcoded behavior. This is especially useful for non-Go projects or repos with a different directory layout than `cmd/`, `internal/`, `go.mod`. In multi-repo mode, each `[[repos]]` entry may define its own `[repos.risk]` sub-table to override `[risk]` for that repo only (see below).
 
 ### Webhook Notifications
 
@@ -250,21 +281,33 @@ repo  = "repo-one"
 owner = "your-org"
 repo  = "repo-two"
 label = "hermit"   # optional: only pick up Issues with this label in this repo
+
+# [repos.risk]                 # optional: overrides the top-level [risk] section for repo-two only
+# high_file_threshold = 10
 ```
 
 When `[[repos]]` is present, `list_issues` queries all configured repositories and returns issues from all of them in a single call.
 
 ---
 
-## Pausing and Resuming Autonomous Operation
+## Pausing, Resuming, and Quitting Autonomous Operation
 
 ```sh
 hermit pause    # pause autonomous operation (creates .hermit-paused)
 hermit resume   # resume autonomous operation (removes .hermit-paused)
-hermit status   # check current state (running / paused)
+hermit quit     # terminate the /loop entirely (creates .hermit-quit)
+hermit status   # check current state (running / paused / quit requested)
 ```
 
 The Superintendent checks for `.hermit-paused` at the start of each cycle. Running `hermit pause` stops it after the current cycle completes; `hermit resume` resumes it immediately.
+
+`hermit pause` / `hermit resume` only suspend and resume the Issue-processing part of the cycle — the underlying `/loop` (and its recurring `ScheduleWakeup` reschedule) keeps running, waking up every cycle to re-check the pause flag. Use `hermit quit` (or the `/hermit-quit` skill) when you want to stop the `/loop` itself: it creates `.hermit-quit`, and the Superintendent cycle checks for it first, before the pause check. When present, the cycle stops without calling `ScheduleWakeup` again, ending the loop for good. Unlike pause, quitting is **not** resumable with `hermit resume` — start `/hermit` again to begin a fresh loop.
+
+| | `hermit pause` | `hermit quit` |
+|---|---|---|
+| Flag file | `.hermit-paused` | `.hermit-quit` |
+| Effect | Suspends Issue processing; `/loop` keeps ticking | Stops the `/loop` itself (no more `ScheduleWakeup`) |
+| Resumable? | Yes, via `hermit resume` | No — run `/hermit` again to restart |
 
 ---
 
@@ -285,11 +328,12 @@ When the score drops below 70, a lesson is generated and saved to `.hermit/lesso
 
 ```
 hermit serve     # Start the MCP server (stdio) — Claude Code auto-starts this, manual execution normally not needed
-hermit install   # Register MCP server in ~/.claude/settings.json and install slash commands
+hermit install   # Register MCP server via `claude mcp add` and install slash commands
 hermit init      # Initialize a project (generate harness.toml, CLAUDE.md, issue template, settings)
-hermit pause     # Pause autonomous operation
+hermit pause     # Pause autonomous operation (resumable)
 hermit resume    # Resume autonomous operation
-hermit status    # Show autonomous operation status (running / paused)
+hermit quit      # Terminate the Superintendent /loop entirely (not resumable)
+hermit status    # Show autonomous operation status (running / paused / quit requested)
 hermit use       # Apply a model preset to harness.toml (e.g. hermit use claude-cheap)
 hermit version   # Print the current hermit version
 hermit upgrade   # Download and install the latest hermit release
