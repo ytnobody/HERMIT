@@ -227,12 +227,13 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("merge_pr",
-			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Posts a risk comment but always merges regardless of risk level."),
+			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Posts a risk comment and, by default, blocks the merge when the risk level is HIGH (returns merged: false). Pass force: true to merge a HIGH-risk PR anyway."),
 			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
 			mcp.WithString("worktree_path", mcp.Description("Path to the worktree to remove after merge (optional)")),
 			mcp.WithString("branch", mcp.Description("Branch name to remove after merge (optional)")),
 			mcp.WithString("owner", mcp.Description("Repository owner (optional, defaults to primary repo)")),
 			mcp.WithString("repo", mcp.Description("Repository name (optional, defaults to primary repo)")),
+			mcp.WithBoolean("force", mcp.Description("If true, merges even when the risk level is HIGH (optional, default false)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			num, err := req.RequireInt("pr_number")
@@ -241,6 +242,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			}
 			owner := req.GetString("owner", "")
 			repo := req.GetString("repo", "")
+			force := req.GetBool("force", false)
 			status, err := client.GetPRStatusInRepo(num, owner, repo)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
@@ -249,6 +251,10 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if level == risk.High {
 				msg := fmt.Sprintf("⚠️ HERMIT: HIGH risk detected.\nReasons: %v", reasons)
 				_ = client.PostCommentInRepo(num, msg, owner, repo)
+				if !force {
+					b, _ := json.Marshal(map[string]any{"merged": false, "reason": "high risk", "risk_reasons": reasons})
+					return mcp.NewToolResultText(string(b)), nil
+				}
 			}
 			if !status.CIPassing {
 				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "CI failing"})

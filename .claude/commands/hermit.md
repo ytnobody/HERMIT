@@ -13,6 +13,5 @@ Each cycle:
    - Information to pass to each Engineer: Issue number, title, body, `worktree_path`, `branch`
 7. Wait for all Engineers to complete
 8. Run `evaluate_risk` on the PR for each Issue
-   - LOW / MEDIUM: run `merge_pr`
+   - LOW / MEDIUM: run `merge_pr` with `worktree_path`/`branch` so the worktree is cleaned up automatically
    - HIGH: post a comment on the PR and skip
-9. Delete merged worktrees with `close_worktree`

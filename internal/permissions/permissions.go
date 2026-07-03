@@ -108,7 +108,6 @@ func DefaultSettingsJSON() []byte {
 		"mcp__hermit__list_issues",
 		"mcp__hermit__assign_issue",
 		"mcp__hermit__create_worktree",
-		"mcp__hermit__close_worktree",
 		"mcp__hermit__evaluate_risk",
 		"mcp__hermit__merge_pr",
 		"mcp__hermit__post_comment",

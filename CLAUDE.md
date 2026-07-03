@@ -23,10 +23,9 @@ Repeat the following cycle.
 9. Run `check_ci_status` on the PR for each Issue
    - If CI is failing: the tool automatically posts an investigation comment listing the failing checks; skip merging and wait for fixes
    - If CI is passing: run `evaluate_risk`
-     - LOW / MEDIUM: run `merge_pr`
+     - LOW / MEDIUM: run `merge_pr` with `worktree_path` and `branch` so the worktree is cleaned up automatically after a successful merge
      - HIGH: post a comment on the PR and skip
-10. Delete merged worktrees with `close_worktree`
-11. Return to step 1
+10. Return to step 1
 
 ---
 

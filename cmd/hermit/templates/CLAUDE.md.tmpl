@@ -26,10 +26,9 @@ Repeat the following cycle.
    - If the parallel count exceeds {{ .MaxEngineers }}, process the first {{ .MaxEngineers }} and defer the rest to the next cycle
 8. Wait for all Engineers to complete
 9. Run `evaluate_risk` on the PR for each Issue
-   - LOW / MEDIUM: run `merge_pr`
+   - LOW / MEDIUM: run `merge_pr` with `worktree_path`/`branch` so the worktree is cleaned up automatically
    - HIGH: post a comment on the PR and skip
-10. Delete merged worktrees with `close_worktree`
-11. Return to step 1
+10. Return to step 1
 
 ---
 
