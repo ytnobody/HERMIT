@@ -27,8 +27,9 @@ analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/
 # branch_prefix = "hermit/your-login"  # defaults to hermit/<gh_login> if omitted
 
 # [risk]
-# high_paths            = ["cmd/", "go.mod", ".github/"]  # HIGH risk when a changed file matches one of these prefixes
-# medium_paths          = ["internal/"]                   # MEDIUM risk when a changed file matches one of these prefixes
+# high_paths            = ["cmd/", "go.mod", ".github/"]  # HIGH risk when a changed file matches one of these prefixes (see exclude_paths below for exceptions)
+# medium_paths          = ["internal/"]                   # MEDIUM risk when a changed file matches one of these prefixes (see exclude_paths below for exceptions)
+# exclude_paths         = ["cmd/hermit/templates/"]       # never a path-based HIGH/MEDIUM signal even if also matched above (scaffold/template content, not program logic). *_test.go files are always excluded from path matching regardless of this list, since adding tests should not raise risk.
 # high_file_threshold   = 20    # HIGH risk when this many or more files changed
 # high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
 # medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
