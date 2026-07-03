@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ytnobody/hermit/internal/risk"
 )
 
 // --- loadConfig ---
@@ -257,6 +259,205 @@ loop_interval = 60
 	cfg := loadConfig()
 	if cfg.Agent.LoopInterval != 60 {
 		t.Errorf("expected LoopInterval 60, got %d", cfg.Agent.LoopInterval)
+	}
+}
+
+// --- [risk] section / resolveRiskConfig ---
+
+// TestLoadConfig_RiskSection_Custom verifies that harness.toml's [risk]
+// section is parsed into cfg.Risk and that resolveRiskConfig applies it on
+// top of the hardcoded default policy.
+func TestLoadConfig_RiskSection_Custom(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+
+[risk]
+high_paths            = ["src/", "Cargo.toml"]
+medium_paths          = ["lib/"]
+high_file_threshold   = 15
+high_line_threshold   = 300
+medium_file_threshold = 5
+medium_line_threshold = 100
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if len(cfg.Risk.HighPaths) != 2 || cfg.Risk.HighPaths[0] != "src/" || cfg.Risk.HighPaths[1] != "Cargo.toml" {
+		t.Errorf("unexpected Risk.HighPaths: %+v", cfg.Risk.HighPaths)
+	}
+	if len(cfg.Risk.MediumPaths) != 1 || cfg.Risk.MediumPaths[0] != "lib/" {
+		t.Errorf("unexpected Risk.MediumPaths: %+v", cfg.Risk.MediumPaths)
+	}
+	if cfg.Risk.HighFileThreshold != 15 || cfg.Risk.HighLineThreshold != 300 {
+		t.Errorf("unexpected Risk high thresholds: %+v", cfg.Risk)
+	}
+	if cfg.Risk.MediumFileThreshold != 5 || cfg.Risk.MediumLineThreshold != 100 {
+		t.Errorf("unexpected Risk medium thresholds: %+v", cfg.Risk)
+	}
+
+	def, repoCfgs := resolveRiskConfig(cfg)
+	if repoCfgs != nil {
+		t.Errorf("expected no per-repo overrides in single-repo mode, got %+v", repoCfgs)
+	}
+	if def.HighFileThreshold != 15 || def.HighLineThreshold != 300 {
+		t.Errorf("resolveRiskConfig() default high thresholds = %+v, want overridden values", def)
+	}
+	if def.MediumFileThreshold != 5 || def.MediumLineThreshold != 100 {
+		t.Errorf("resolveRiskConfig() default medium thresholds = %+v, want overridden values", def)
+	}
+	if len(def.HighPaths) != 2 || def.HighPaths[0] != "src/" {
+		t.Errorf("resolveRiskConfig() default HighPaths = %+v, want overridden value", def.HighPaths)
+	}
+}
+
+// TestLoadConfig_RiskSection_Omitted verifies that when [risk] is entirely
+// absent from harness.toml, resolveRiskConfig falls back to the exact
+// hardcoded legacy defaults (risk.DefaultConfig()) — i.e. omitting the
+// section is fully backward compatible.
+func TestLoadConfig_RiskSection_Omitted(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	def, repoCfgs := resolveRiskConfig(cfg)
+	if repoCfgs != nil {
+		t.Errorf("expected no per-repo overrides, got %+v", repoCfgs)
+	}
+	want := risk.DefaultConfig()
+	if def.HighFileThreshold != want.HighFileThreshold || def.HighLineThreshold != want.HighLineThreshold {
+		t.Errorf("default high thresholds = %+v, want legacy defaults %+v", def, want)
+	}
+	if def.MediumFileThreshold != want.MediumFileThreshold || def.MediumLineThreshold != want.MediumLineThreshold {
+		t.Errorf("default medium thresholds = %+v, want legacy defaults %+v", def, want)
+	}
+	if len(def.HighPaths) != len(want.HighPaths) {
+		t.Fatalf("HighPaths = %+v, want %+v", def.HighPaths, want.HighPaths)
+	}
+	for i := range want.HighPaths {
+		if def.HighPaths[i] != want.HighPaths[i] {
+			t.Errorf("HighPaths[%d] = %q, want %q", i, def.HighPaths[i], want.HighPaths[i])
+		}
+	}
+	if len(def.MediumPaths) != len(want.MediumPaths) || def.MediumPaths[0] != want.MediumPaths[0] {
+		t.Errorf("MediumPaths = %+v, want %+v", def.MediumPaths, want.MediumPaths)
+	}
+}
+
+// TestLoadConfig_RiskSection_PartialOverride verifies that specifying only
+// some [risk] fields leaves the rest at the hardcoded default (partial
+// override / backward-compatible merge behavior).
+func TestLoadConfig_RiskSection_PartialOverride(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+
+[risk]
+high_file_threshold = 3
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	def, _ := resolveRiskConfig(cfg)
+	want := risk.DefaultConfig()
+	if def.HighFileThreshold != 3 {
+		t.Errorf("HighFileThreshold = %d, want 3", def.HighFileThreshold)
+	}
+	if def.HighLineThreshold != want.HighLineThreshold {
+		t.Errorf("HighLineThreshold = %d, want default %d", def.HighLineThreshold, want.HighLineThreshold)
+	}
+	if def.MediumFileThreshold != want.MediumFileThreshold {
+		t.Errorf("MediumFileThreshold = %d, want default %d", def.MediumFileThreshold, want.MediumFileThreshold)
+	}
+	if len(def.HighPaths) != len(want.HighPaths) {
+		t.Errorf("HighPaths = %+v, want default %+v", def.HighPaths, want.HighPaths)
+	}
+}
+
+// TestLoadConfig_RiskSection_PerRepoOverride verifies that in multi-repo
+// mode, a [[repos]] entry's own [repos.risk] sub-table overrides the
+// top-level [risk] section for that repo only, while other repos and the
+// unqualified default fall back to the global config.
+func TestLoadConfig_RiskSection_PerRepoOverride(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "myorg"
+repo  = "primary"
+
+[risk]
+high_file_threshold = 15
+
+[[repos]]
+owner = "myorg"
+repo  = "frontend"
+label = "hermit"
+
+[repos.risk]
+high_file_threshold = 3
+high_paths          = ["src/"]
+
+[[repos]]
+owner = "myorg"
+repo  = "backend"
+label = "hermit"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	def, repoCfgs := resolveRiskConfig(cfg)
+
+	if def.HighFileThreshold != 15 {
+		t.Errorf("global default HighFileThreshold = %d, want 15", def.HighFileThreshold)
+	}
+
+	frontend, ok := repoCfgs["myorg/frontend"]
+	if !ok {
+		t.Fatalf("expected an override for myorg/frontend, got %+v", repoCfgs)
+	}
+	if frontend.HighFileThreshold != 3 {
+		t.Errorf("frontend HighFileThreshold = %d, want 3 (repo override)", frontend.HighFileThreshold)
+	}
+	if len(frontend.HighPaths) != 1 || frontend.HighPaths[0] != "src/" {
+		t.Errorf("frontend HighPaths = %+v, want [src/]", frontend.HighPaths)
+	}
+	// Fields not overridden at the repo level should fall back to the
+	// resolved global config, not the hardcoded legacy default.
+	if frontend.HighLineThreshold != def.HighLineThreshold {
+		t.Errorf("frontend HighLineThreshold = %d, want inherited global value %d", frontend.HighLineThreshold, def.HighLineThreshold)
+	}
+
+	backend, ok := repoCfgs["myorg/backend"]
+	if !ok {
+		t.Fatalf("expected an entry for myorg/backend, got %+v", repoCfgs)
+	}
+	if backend.HighFileThreshold != 15 {
+		t.Errorf("backend HighFileThreshold = %d, want inherited global value 15 (no repo override)", backend.HighFileThreshold)
 	}
 }
 

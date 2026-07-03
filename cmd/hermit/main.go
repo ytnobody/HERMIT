@@ -20,17 +20,45 @@ import (
 	"github.com/ytnobody/hermit/internal/permissions"
 	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/requirements"
+	"github.com/ytnobody/hermit/internal/risk"
 )
 
 //go:embed templates/* templates/commands/*
 var templateFS embed.FS
 
 // RepoConfig holds the owner, repo, and optional label filter for a single
-// repository entry in the [[repos]] array.
+// repository entry in the [[repos]] array. Risk optionally overrides the
+// top-level [risk] section for this repo only (multi-repo mode).
 type RepoConfig struct {
-	Owner string `toml:"owner"`
-	Repo  string `toml:"repo"`
-	Label string `toml:"label"`
+	Owner string     `toml:"owner"`
+	Repo  string     `toml:"repo"`
+	Label string     `toml:"label"`
+	Risk  RiskConfig `toml:"risk"`
+}
+
+// RiskConfig maps the [risk] (and per-repo [repos.risk]) harness.toml
+// section onto internal/risk.Config. Any field left unset (empty slice or
+// zero threshold) falls back to the parent level's value: [repos.risk] falls
+// back to [risk], which itself falls back to risk.DefaultConfig().
+type RiskConfig struct {
+	HighPaths           []string `toml:"high_paths"`
+	MediumPaths         []string `toml:"medium_paths"`
+	HighFileThreshold   int      `toml:"high_file_threshold"`
+	HighLineThreshold   int      `toml:"high_line_threshold"`
+	MediumFileThreshold int      `toml:"medium_file_threshold"`
+	MediumLineThreshold int      `toml:"medium_line_threshold"`
+}
+
+// toRiskConfig converts a RiskConfig (TOML shape) into a risk.Config.
+func (r RiskConfig) toRiskConfig() risk.Config {
+	return risk.Config{
+		HighPaths:           r.HighPaths,
+		MediumPaths:         r.MediumPaths,
+		HighFileThreshold:   r.HighFileThreshold,
+		HighLineThreshold:   r.HighLineThreshold,
+		MediumFileThreshold: r.MediumFileThreshold,
+		MediumLineThreshold: r.MediumLineThreshold,
+	}
 }
 
 type Config struct {
@@ -72,6 +100,10 @@ type Config struct {
 		WebhookURL string `toml:"webhook_url"`
 		Type       string `toml:"type"`
 	} `toml:"notification"`
+	// Risk configures the risk-evaluation policy (see internal/risk.Config).
+	// Any field left unset falls back to risk.DefaultConfig(). [[repos]]
+	// entries may further override this via their own `risk` sub-table.
+	Risk      RiskConfig `toml:"risk"`
 	Readiness struct {
 		// MinBodyLength is the minimum number of non-whitespace characters an
 		// Issue body must contain to be considered ready for implementation.
@@ -100,6 +132,24 @@ type Config struct {
 		// reconcile sweep can distinguish "no such test" from "test failed".
 		TestCommand string `toml:"test_command"`
 	} `toml:"requirements"`
+}
+
+// resolveRiskConfig builds the effective default risk.Config (harness.toml's
+// [risk] section layered over risk.DefaultConfig()) and, in multi-repo mode,
+// a map of per-repo overrides keyed by "owner/repo" (layered over the
+// resolved default).
+func resolveRiskConfig(cfg Config) (risk.Config, map[string]risk.Config) {
+	def := risk.Merge(risk.DefaultConfig(), cfg.Risk.toRiskConfig())
+
+	var repoConfigs map[string]risk.Config
+	for _, r := range cfg.Repos {
+		merged := risk.Merge(def, r.Risk.toRiskConfig())
+		if repoConfigs == nil {
+			repoConfigs = make(map[string]risk.Config, len(cfg.Repos))
+		}
+		repoConfigs[r.Owner+"/"+r.Repo] = merged
+	}
+	return def, repoConfigs
 }
 
 // ModelPreset defines superintendent/engineer/analyst model combinations.
@@ -403,6 +453,8 @@ func cmdServe() {
 		Label:                     cfg.Readiness.Label,
 	}
 
+	defaultRiskCfg, repoRiskCfgs := resolveRiskConfig(cfg)
+
 	model := mcp.ModelConfig{
 		Superintendent:       cfg.Model.Superintendent,
 		Engineer:             cfg.Model.Engineer,
@@ -412,7 +464,7 @@ func cmdServe() {
 		AnalystEffort:        resolveAnalystEffort(cfg),
 	}
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, model); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model); err != nil {
 		fatal(err.Error())
 	}
 }

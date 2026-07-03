@@ -47,7 +47,22 @@ type githubClient interface {
 	GetRecentPRComments(prNumber int, since string) ([]gh.PRComment, error)
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, model ModelConfig) {
+// resolveRiskConfig returns the risk.Config to apply for the given owner/repo
+// pair: the per-repo override in repoRiskConfigs when present, otherwise
+// defaultRiskConfig. An empty owner/repo (the primary repo in single-repo
+// mode, or the unqualified default in multi-repo mode) always resolves to
+// defaultRiskConfig.
+func resolveRiskConfig(owner, repo string, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config) risk.Config {
+	if owner == "" && repo == "" {
+		return defaultRiskConfig
+	}
+	if cfg, ok := repoRiskConfigs[owner+"/"+repo]; ok {
+		return cfg
+	}
+	return defaultRiskConfig
+}
+
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -219,7 +234,8 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			level, reasons := risk.Evaluate(status.Files, status.Additions, status.Deletions)
+			riskCfg := resolveRiskConfig(owner, repo, defaultRiskConfig, repoRiskConfigs)
+			level, reasons := risk.EvaluateWithConfig(status.Files, status.Additions, status.Deletions, riskCfg)
 			b, _ := json.Marshal(map[string]any{"level": level, "reasons": reasons})
 			return mcp.NewToolResultText(string(b)), nil
 		},
@@ -247,7 +263,8 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			level, reasons := risk.Evaluate(status.Files, status.Additions, status.Deletions)
+			riskCfg := resolveRiskConfig(owner, repo, defaultRiskConfig, repoRiskConfigs)
+			level, reasons := risk.EvaluateWithConfig(status.Files, status.Additions, status.Deletions, riskCfg)
 			if level == risk.High {
 				msg := fmt.Sprintf("⚠️ HERMIT: HIGH risk detected.\nReasons: %v", reasons)
 				_ = client.PostCommentInRepo(num, msg, owner, repo)
@@ -417,11 +434,12 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("get_config",
-			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval and the model/reasoning-effort configured for each role (superintendent, engineer, analyst)."),
+			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval, the risk-evaluation policy, and the model/reasoning-effort configured for each role (superintendent, engineer, analyst)."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			b, _ := json.Marshal(map[string]any{
+			resp := map[string]any{
 				"loop_interval": loopInterval,
+				"risk":          defaultRiskConfig,
 				"model": map[string]any{
 					"superintendent":        model.Superintendent,
 					"engineer":              model.Engineer,
@@ -430,7 +448,11 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 					"engineer_effort":       model.EngineerEffort,
 					"analyst_effort":        model.AnalystEffort,
 				},
-			})
+			}
+			if len(repoRiskConfigs) > 0 {
+				resp["risk_overrides"] = repoRiskConfigs
+			}
+			b, _ := json.Marshal(resp)
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)

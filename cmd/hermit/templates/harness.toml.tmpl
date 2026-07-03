@@ -26,6 +26,14 @@ analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/
 
 # branch_prefix = "hermit/your-login"  # defaults to hermit/<gh_login> if omitted
 
+# [risk]
+# high_paths            = ["cmd/", "go.mod", ".github/"]  # HIGH risk when a changed file matches one of these prefixes
+# medium_paths          = ["internal/"]                   # MEDIUM risk when a changed file matches one of these prefixes
+# high_file_threshold   = 20    # HIGH risk when this many or more files changed
+# high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
+# medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
+# medium_line_threshold = 200   # MEDIUM risk when this many or more lines changed
+
 # [readiness]
 # min_body_length                 = 40                    # minimum non-whitespace chars in the Issue body
 # skip_acceptance_criteria_check  = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section

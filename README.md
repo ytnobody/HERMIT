@@ -205,6 +205,14 @@ language        = "en"      # "ja" | "en"
 superintendent = "claude-sonnet-5"   # model used for the Superintendent role
 engineer       = "claude-sonnet-5"   # model used for Engineer roles
 
+# [risk]
+# high_paths            = ["cmd/", "go.mod", ".github/"]  # HIGH risk when a changed file matches one of these prefixes
+# medium_paths          = ["internal/"]                   # MEDIUM risk when a changed file matches one of these prefixes
+# high_file_threshold   = 20    # HIGH risk when this many or more files changed
+# high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
+# medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
+# medium_line_threshold = 200   # MEDIUM risk when this many or more lines changed
+
 # [readiness]
 # min_body_length                = 40                    # minimum non-whitespace chars required in the Issue body
 # skip_acceptance_criteria_check = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
@@ -252,6 +260,10 @@ hermit use claude        # Sonnet for both Superintendent and Engineer (balanced
 hermit use claude-cheap  # Sonnet for Superintendent, Haiku for Engineers (cost-optimized)
 ```
 
+### Risk Policy
+
+The `[risk]` section controls how `evaluate_risk` and `merge_pr` classify a PR as LOW, MEDIUM, or HIGH risk: which path prefixes are considered high/medium risk, and the file-count/line-count thresholds for each level. Any field left unset falls back to HERMIT's built-in default (shown commented out above), so omitting `[risk]` entirely preserves the original hardcoded behavior. This is especially useful for non-Go projects or repos with a different directory layout than `cmd/`, `internal/`, `go.mod`. In multi-repo mode, each `[[repos]]` entry may define its own `[repos.risk]` sub-table to override `[risk]` for that repo only (see below).
+
 ### Webhook Notifications
 
 HERMIT can send notifications to Slack, Discord, or any generic webhook when key events occur (issue assigned, PR merged, high risk detected, etc.). Set `webhook_url` in `[notification]`. The webhook type is auto-detected from the URL; set `type` explicitly if needed.
@@ -269,6 +281,9 @@ repo  = "repo-one"
 owner = "your-org"
 repo  = "repo-two"
 label = "hermit"   # optional: only pick up Issues with this label in this repo
+
+# [repos.risk]                 # optional: overrides the top-level [risk] section for repo-two only
+# high_file_threshold = 10
 ```
 
 When `[[repos]]` is present, `list_issues` queries all configured repositories and returns issues from all of them in a single call.

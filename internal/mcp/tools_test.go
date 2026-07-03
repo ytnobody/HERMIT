@@ -13,6 +13,7 @@ import (
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/readiness"
+	"github.com/ytnobody/hermit/internal/risk"
 )
 
 // wellSpecifiedBody is a body long enough, and containing an acceptance
@@ -186,14 +187,24 @@ func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string)
 func newTestServerWithReadiness(t *testing.T, client githubClient, trigger string, readinessCfg readiness.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, ModelConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{})
+	return s
+}
+
+// newTestServerWithRisk is like newTestServer but allows tests to supply a
+// custom default risk.Config and per-repo overrides, exercising the
+// configurable risk policy end-to-end through the MCP tool layer.
+func newTestServerWithRisk(t *testing.T, client githubClient, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{})
 	return s
 }
 
 func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), model)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model)
 	return s
 }
 
@@ -203,7 +214,7 @@ func newTestServerWithRoot(t *testing.T, client githubClient) (*server.MCPServer
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), ModelConfig{})
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{})
 	return s, root
 }
 
@@ -829,6 +840,44 @@ func TestCheckCIStatus_Passing_DoesNotRecordFailure(t *testing.T) {
 	}
 }
 
+// --- get_config / risk policy exposure ---
+
+func TestGetConfig_IncludesDefaultRiskConfig(t *testing.T) {
+	s := newTestServer(t, &mockGithubClient{})
+
+	result := callTool(t, s, "get_config", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	loopInterval, ok := got["loop_interval"].(float64)
+	if !ok || loopInterval != 120 {
+		t.Errorf("expected loop_interval=120, got %v", got["loop_interval"])
+	}
+
+	riskVal, ok := got["risk"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected risk object in get_config response, got %v", got["risk"])
+	}
+	if hf, ok := riskVal["high_file_threshold"].(float64); !ok || hf != 20 {
+		t.Errorf("expected risk.high_file_threshold=20 (legacy default), got %v", riskVal["high_file_threshold"])
+	}
+	if hl, ok := riskVal["high_line_threshold"].(float64); !ok || hl != 500 {
+		t.Errorf("expected risk.high_line_threshold=500 (legacy default), got %v", riskVal["high_line_threshold"])
+	}
+	if _, present := got["risk_overrides"]; present {
+		t.Errorf("did not expect risk_overrides when no per-repo overrides are configured, got %v", got["risk_overrides"])
+	}
+}
+
 // --- readiness behavior ---
 
 func TestListIssues_readiness_unreadyIssueGetsHearingCommentAndLabel(t *testing.T) {
@@ -992,7 +1041,6 @@ func TestGetConfig_IncludesModelConfig(t *testing.T) {
 	s := newTestServerWithModel(t, &mockGithubClient{}, model)
 
 	result := callTool(t, s, "get_config", map[string]any{})
-
 	if result.IsError {
 		t.Fatalf("expected success, got error: %v", result.Content)
 	}
@@ -1028,6 +1076,38 @@ func TestGetConfig_IncludesModelConfig(t *testing.T) {
 	}
 }
 
+func TestGetConfig_IncludesRiskOverrides(t *testing.T) {
+	overrides := map[string]risk.Config{
+		"myorg/frontend": {HighFileThreshold: 3, HighLineThreshold: 50, HighPaths: []string{"src/"}},
+	}
+	s := newTestServerWithRisk(t, &mockGithubClient{}, risk.DefaultConfig(), overrides)
+
+	result := callTool(t, s, "get_config", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	riskOverrides, ok := got["risk_overrides"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected risk_overrides object in get_config response, got %v", got["risk_overrides"])
+	}
+	frontend, ok := riskOverrides["myorg/frontend"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected myorg/frontend entry in risk_overrides, got %v", riskOverrides)
+	}
+	if hf, ok := frontend["high_file_threshold"].(float64); !ok || hf != 3 {
+		t.Errorf("expected myorg/frontend high_file_threshold=3, got %v", frontend["high_file_threshold"])
+	}
+}
+
 // TestGetConfig_AnalystFallback_EmptyWhenUnresolved verifies that get_config
 // simply reflects whatever ModelConfig it was constructed with — callers
 // (cmd/hermit's resolveAnalystModel) are responsible for backward-compat
@@ -1038,7 +1118,6 @@ func TestGetConfig_AnalystFallback_EmptyWhenUnresolved(t *testing.T) {
 	s := newTestServerWithModel(t, &mockGithubClient{}, ModelConfig{Superintendent: "claude-sonnet-5"})
 
 	result := callTool(t, s, "get_config", map[string]any{})
-
 	if result.IsError {
 		t.Fatalf("expected success, got error: %v", result.Content)
 	}
@@ -1056,5 +1135,147 @@ func TestGetConfig_AnalystFallback_EmptyWhenUnresolved(t *testing.T) {
 	}
 	if modelMap["analyst"] != "" {
 		t.Errorf("expected analyst to be empty string when ModelConfig.Analyst is unset, got %v", modelMap["analyst"])
+	}
+}
+
+// --- evaluate_risk / merge_pr: configurable policy + per-repo overrides ---
+
+func TestEvaluateRisk_UsesConfiguredDefaultPolicy(t *testing.T) {
+	// A custom default policy where "docs/" is high-risk (not so under the
+	// hardcoded legacy default) and the file/line thresholds are lowered.
+	customDefault := risk.Config{
+		HighPaths:           []string{"docs/"},
+		MediumPaths:         []string{},
+		HighFileThreshold:   999,
+		HighLineThreshold:   999,
+		MediumFileThreshold: 999,
+		MediumLineThreshold: 999,
+	}
+	status := &gh.PRStatus{
+		Files:     []gh.PRFile{{Filename: "docs/readme.md"}},
+		Additions: 1,
+		Deletions: 0,
+		CIPassing: true,
+	}
+	s := newTestServerWithRisk(t, &mockGithubClient{prStatus: status}, customDefault, nil)
+
+	result := callTool(t, s, "evaluate_risk", map[string]any{"pr_number": float64(1)})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if got["level"] != "HIGH" {
+		t.Errorf("expected HIGH (docs/ configured as a high-risk path), got %v", got["level"])
+	}
+}
+
+func TestEvaluateRisk_PerRepoOverrideAppliesOnlyToMatchingRepo(t *testing.T) {
+	// Default policy: nothing is risky (thresholds effectively disabled).
+	defaultCfg := risk.Config{HighFileThreshold: 999, HighLineThreshold: 999, MediumFileThreshold: 999, MediumLineThreshold: 999}
+	// myorg/frontend gets a strict override: any file under "src/" is HIGH.
+	overrides := map[string]risk.Config{
+		"myorg/frontend": {HighPaths: []string{"src/"}, HighFileThreshold: 999, HighLineThreshold: 999, MediumFileThreshold: 999, MediumLineThreshold: 999},
+	}
+	status := &gh.PRStatus{
+		Files:     []gh.PRFile{{Filename: "src/main.py"}},
+		Additions: 1,
+		Deletions: 0,
+		CIPassing: true,
+	}
+	s := newTestServerWithRisk(t, &mockGithubClient{prStatus: status}, defaultCfg, overrides)
+
+	// Matching repo: override applies -> HIGH.
+	result := callTool(t, s, "evaluate_risk", map[string]any{
+		"pr_number": float64(1), "owner": "myorg", "repo": "frontend",
+	})
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if got["level"] != "HIGH" {
+		t.Errorf("myorg/frontend: expected HIGH via repo override, got %v", got["level"])
+	}
+
+	// A different repo not present in overrides: falls back to the
+	// (non-risky) default policy -> LOW.
+	result2 := callTool(t, s, "evaluate_risk", map[string]any{
+		"pr_number": float64(1), "owner": "myorg", "repo": "backend",
+	})
+	tc2, ok := result2.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got2 map[string]any
+	if err := json.Unmarshal([]byte(tc2.Text), &got2); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if got2["level"] != "LOW" {
+		t.Errorf("myorg/backend: expected LOW (no override, non-risky default), got %v", got2["level"])
+	}
+
+	// No owner/repo (primary repo): also falls back to the default policy.
+	result3 := callTool(t, s, "evaluate_risk", map[string]any{"pr_number": float64(1)})
+	tc3, ok := result3.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got3 map[string]any
+	if err := json.Unmarshal([]byte(tc3.Text), &got3); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if got3["level"] != "LOW" {
+		t.Errorf("primary repo (no owner/repo): expected LOW, got %v", got3["level"])
+	}
+}
+
+func TestMergePR_UsesPerRepoRiskOverrideForHighRiskComment(t *testing.T) {
+	defaultCfg := risk.Config{HighFileThreshold: 999, HighLineThreshold: 999, MediumFileThreshold: 999, MediumLineThreshold: 999}
+	overrides := map[string]risk.Config{
+		"myorg/frontend": {HighPaths: []string{"src/"}, HighFileThreshold: 999, HighLineThreshold: 999, MediumFileThreshold: 999, MediumLineThreshold: 999},
+	}
+	status := &gh.PRStatus{
+		Files:     []gh.PRFile{{Filename: "src/main.py"}},
+		Additions: 1,
+		Deletions: 0,
+		CIPassing: true,
+	}
+	mock := &mockGithubClient{prStatus: status}
+	s := newTestServerWithRisk(t, mock, defaultCfg, overrides)
+
+	result := callTool(t, s, "merge_pr", map[string]any{
+		"pr_number": float64(1), "owner": "myorg", "repo": "frontend",
+	})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	// The per-repo override classifies this as HIGH, so merge_pr blocks by
+	// default (see TestMergePR_highRisk_blocksByDefault) rather than merging.
+	if merged, _ := got["merged"].(bool); merged {
+		t.Errorf("expected merged=false for HIGH risk PR without force, got %v", got["merged"])
+	}
+	if len(mock.postedComments) != 1 {
+		t.Fatalf("expected exactly one risk comment posted, got %d", len(mock.postedComments))
+	}
+	if body := mock.postedComments[0].body; !strings.Contains(body, "src/main.py is in a high-risk path") {
+		t.Errorf("expected risk comment to reflect the per-repo override reason, got %q", body)
 	}
 }
