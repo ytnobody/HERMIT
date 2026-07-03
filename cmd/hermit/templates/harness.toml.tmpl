@@ -48,3 +48,19 @@ analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/
 # # test_command must produce `go test -v` style output ("=== RUN" markers)
 # # so the sweep can tell "no such test" apart from "test failed".
 # test_command = "go test ./... -run '^{req_id}' -v"
+#
+# # paths: candidate requirements-document locations (relative to the project
+# # root). At `hermit serve` startup, HERMIT checks whether ANY one of these
+# # exists; if none do, it opens exactly one "requirements hearing" Issue
+# # (labeled hermit-hearing) asking a human for the project's purpose, scope,
+# # acceptance criteria, and out-of-scope items, and skips creating a
+# # duplicate on every later restart. hermit-hearing Issues are excluded from
+# # list_issues (they're addressed to a human, not an Engineer) until the
+# # label is removed once answered.
+# #
+# # Default when [requirements] (or just `paths`) is omitted entirely: this
+# # check is enabled by default (NOT a no-op) — the effective path list falls
+# # back to `doc` above if set, otherwise to the built-in default shown below.
+# # There is no config knob to disable the check; delete this comment block's
+# # intent by simply keeping a requirements doc at one of the default paths.
+# paths = ["REQUIREMENTS.md", "docs/requirements.md"]  # any one of these existing is OK (default shown)

@@ -131,6 +131,20 @@ type Config struct {
 		// `go test -v` style output) for every test that matched, so the
 		// reconcile sweep can distinguish "no such test" from "test failed".
 		TestCommand string `toml:"test_command"`
+		// Paths lists candidate requirements-document locations (relative to
+		// the project root); the project is considered to have a
+		// requirements document if any one of them exists. Checked once at
+		// `hermit serve` startup (see runRequirementsHearingCheck) — this is
+		// Issue #104's precondition gate, distinct from (but complementary
+		// to) the Doc field above used by the #106 reconcile sweep.
+		//
+		// Default when empty: falls back to Doc (if set), otherwise to
+		// requirements.DefaultHearingPaths ("REQUIREMENTS.md" and
+		// "docs/requirements.md"). This check is enabled by default — an
+		// unconfigured [requirements] section is NOT a no-op — so every
+		// project gets the guard against missing requirements docs without
+		// needing to opt in.
+		Paths []string `toml:"paths"`
 	} `toml:"requirements"`
 }
 
@@ -439,6 +453,7 @@ func cmdServe() {
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
 	prefix := resolveBranchPrefix(cfg)
 
+	runRequirementsHearingCheck(rootDir, cfg, client)
 	runRequirementsSweep(rootDir, cfg, client)
 
 	// Convert []RepoConfig → []gh.RepoConfig for the MCP layer.
@@ -466,6 +481,57 @@ func cmdServe() {
 
 	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model); err != nil {
 		fatal(err.Error())
+	}
+}
+
+// resolveHearingPaths returns the effective list of candidate
+// requirements-document paths used by runRequirementsHearingCheck.
+//
+//  1. [requirements].paths, if explicitly set, is used as-is.
+//  2. Otherwise, [requirements].doc, if set (even though it's primarily
+//     consumed by the #106 reconcile sweep), is used as the sole candidate —
+//     a project that has already configured a non-default doc path
+//     shouldn't be told it's missing a requirements doc just because that
+//     path isn't one of the hard-coded defaults.
+//  3. Otherwise, requirements.DefaultHearingPaths is used.
+func resolveHearingPaths(cfg Config) []string {
+	if len(cfg.Requirements.Paths) > 0 {
+		return cfg.Requirements.Paths
+	}
+	if cfg.Requirements.Doc != "" {
+		return []string{cfg.Requirements.Doc}
+	}
+	return requirements.DefaultHearingPaths
+}
+
+// runRequirementsHearingCheck implements Issue #104's deterministic,
+// idempotent precondition check: at `hermit serve` startup, verify that a
+// requirements document exists at one of the configured (or default)
+// candidate paths. If none exists, open exactly one "requirements hearing"
+// Issue (deduped by the requirements.HearingLabel label) asking a human for
+// the project's purpose, scope, acceptance criteria, and out-of-scope items.
+//
+// This check never depends on LLM judgment — existence is a plain os.Stat,
+// and dedup is a plain GitHub label query — and it never blocks normal Issue
+// processing: it only ever creates a separate, clearly-labeled Issue that
+// list_issues excludes from the Engineer queue (see internal/mcp/tools.go).
+//
+// Like runRequirementsSweep, this is best-effort: any error is logged rather
+// than fatal, since a hearing-check failure (e.g. a transient GitHub API
+// error) must never prevent `hermit serve` from starting.
+func runRequirementsHearingCheck(rootDir string, cfg Config, client *gh.Client) {
+	paths := resolveHearingPaths(cfg)
+	if requirements.DocExists(rootDir, paths) {
+		return
+	}
+
+	created, err := requirements.EnsureHearingIssue(client)
+	if err != nil {
+		log.Printf("requirements hearing: %v", err)
+		return
+	}
+	if created {
+		log.Printf("requirements hearing: no requirements document found at %v; opened an issue labeled %q", paths, requirements.HearingLabel)
 	}
 }
 
