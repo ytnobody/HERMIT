@@ -337,24 +337,142 @@ func (c *Client) IsCIPassing(prNumber int, sha string) (bool, error) {
 // IsCIPassingInRepo checks CI status for a specific repo. Pass empty strings
 // to use the client's primary owner/repo.
 //
+// CI status is derived from two independent GitHub APIs, since GitHub Actions
+// results are exposed as "check-runs" (Checks API) rather than legacy commit
+// statuses (Status API) — a repo using Actions-based CI (the common case)
+// will have zero legacy commit statuses, so relying on the Status API alone
+// makes this always report "no CI configured".
+//
 // Returns true when:
-//   - state == "success" (all checks passed)
-//   - state == "" (no state set)
-//   - total_count == 0 (no CI checks configured; treat as passing so repos
-//     without CI are not permanently blocked from auto-merge)
+//   - all legacy commit statuses (if any) report state == "success", AND
+//   - all check-runs (if any) are "completed" with a non-blocking conclusion
+//     ("success", "neutral", or "skipped"), AND
+//   - there is at least one status/check-run — OR there are truly zero of
+//     both (no CI configured at all; treat as passing so repos without any
+//     CI are not permanently blocked from auto-merge).
+//
+// A check-run that hasn't completed yet ("queued"/"in_progress") counts as
+// not-passing (pending), not as a failure and not as a success.
 func (c *Client) IsCIPassingInRepo(prNumber int, sha, owner, repo string) (bool, error) {
 	owner, repo = c.resolveRepo(owner, repo)
-	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
+	result, err := c.fetchCombinedCIStatus(context.Background(), owner, repo, sha)
 	if err != nil {
 		return false, err
 	}
-	// No checks configured — GitHub returns state "pending" with total_count 0.
-	// Treat this as passing so repos without CI are not blocked from auto-merge.
-	if status.GetTotalCount() == 0 {
-		return true, nil
+	return result.Passing, nil
+}
+
+// combinedCIResult holds the merged CI status computed from both the legacy
+// Commit Status API and the GitHub Actions Checks API for a single ref.
+type combinedCIResult struct {
+	Passing    bool
+	State      string
+	TotalCount int
+	Checks     []CICheckResult
+	FailedOnly []CICheckResult
+}
+
+// checkRunResultState maps a GitHub Actions check-run's status/conclusion
+// into the same "success"/"failure"/"pending" vocabulary used for legacy
+// commit statuses, so callers (and the CICheckResult JSON shape) don't need
+// to special-case check-runs.
+//
+// "neutral" and "skipped" conclusions are treated as success because GitHub
+// itself does not block merges on them. A check-run that hasn't completed
+// yet ("queued"/"in_progress") maps to "pending".
+func checkRunResultState(run *gogithub.CheckRun) string {
+	if run.GetStatus() != "completed" {
+		return "pending"
 	}
-	state := status.GetState()
-	return state == "success" || state == "", nil
+	switch run.GetConclusion() {
+	case "success", "neutral", "skipped":
+		return "success"
+	default:
+		return "failure"
+	}
+}
+
+// fetchCombinedCIStatus fetches both legacy commit statuses and GitHub
+// Actions check-runs for the given ref and combines them into a single
+// result. It is the shared implementation behind IsCIPassingInRepo and
+// GetCIDetailsInRepo so the combination logic only lives in one place.
+func (c *Client) fetchCombinedCIStatus(ctx context.Context, owner, repo, ref string) (*combinedCIResult, error) {
+	status, _, err := c.gh.Repositories.GetCombinedStatus(ctx, owner, repo, ref, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get combined status: %w", err)
+	}
+
+	checkRunsResult, _, err := c.gh.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list check runs: %w", err)
+	}
+	var checkRuns []*gogithub.CheckRun
+	if checkRunsResult != nil {
+		checkRuns = checkRunsResult.CheckRuns
+	}
+
+	// Legacy commit-status passing, preserving the original semantics:
+	// total_count == 0 means no legacy statuses at all (not a failure signal).
+	totalStatuses := status.GetTotalCount()
+	legacyState := status.GetState()
+	legacyPassing := totalStatuses == 0 || legacyState == "success" || legacyState == ""
+
+	var checks []CICheckResult
+	for _, s := range status.Statuses {
+		checks = append(checks, CICheckResult{
+			Name:        s.GetContext(),
+			State:       s.GetState(),
+			Description: s.GetDescription(),
+			TargetURL:   s.GetTargetURL(),
+		})
+	}
+
+	checkRunsPassing := true
+	for _, run := range checkRuns {
+		state := checkRunResultState(run)
+		if state != "success" {
+			checkRunsPassing = false
+		}
+		checks = append(checks, CICheckResult{
+			Name:        run.GetName(),
+			State:       state,
+			Description: run.GetOutput().GetSummary(),
+			TargetURL:   run.GetHTMLURL(),
+		})
+	}
+
+	var failed []CICheckResult
+	for _, ch := range checks {
+		if ch.State == "failure" || ch.State == "error" {
+			failed = append(failed, ch)
+		}
+	}
+
+	total := totalStatuses + len(checkRuns)
+	passing := legacyPassing && checkRunsPassing
+
+	// Derive an overall state string. Kept aligned with the legacy status
+	// semantics when there's no check-run signal to add, but reflects the
+	// combined result once check-runs are in play.
+	var state string
+	switch {
+	case total == 0:
+		state = ""
+	case passing:
+		state = "success"
+	case len(failed) > 0:
+		state = "failure"
+	default:
+		state = "pending"
+	}
+
+	return &combinedCIResult{
+		Passing:    passing,
+		State:      state,
+		TotalCount: total,
+		Checks:     checks,
+		FailedOnly: failed,
+	}, nil
 }
 
 // CICheckResult holds information about a single CI check.
@@ -393,39 +511,19 @@ func (c *Client) GetCIDetailsInRepo(prNumber int, owner, repo string) (*CIDetail
 	}
 	sha := pr.GetHead().GetSHA()
 
-	status, _, err := c.gh.Repositories.GetCombinedStatus(context.Background(), owner, repo, sha, nil)
+	result, err := c.fetchCombinedCIStatus(context.Background(), owner, repo, sha)
 	if err != nil {
-		return nil, fmt.Errorf("get combined status: %w", err)
-	}
-
-	state := status.GetState()
-	passing := state == "success" || state == ""
-
-	var checks []CICheckResult
-	for _, s := range status.Statuses {
-		checks = append(checks, CICheckResult{
-			Name:        s.GetContext(),
-			State:       s.GetState(),
-			Description: s.GetDescription(),
-			TargetURL:   s.GetTargetURL(),
-		})
-	}
-
-	var failed []CICheckResult
-	for _, ch := range checks {
-		if ch.State == "failure" || ch.State == "error" {
-			failed = append(failed, ch)
-		}
+		return nil, err
 	}
 
 	return &CIDetails{
 		PRNumber:   prNumber,
 		SHA:        sha,
-		State:      state,
-		Passing:    passing,
-		TotalCount: len(checks),
-		Checks:     checks,
-		FailedOnly: failed,
+		State:      result.State,
+		Passing:    result.Passing,
+		TotalCount: result.TotalCount,
+		Checks:     result.Checks,
+		FailedOnly: result.FailedOnly,
 	}, nil
 }
 

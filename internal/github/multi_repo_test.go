@@ -383,6 +383,7 @@ func TestGetPRStatusInRepo_OverrideRepo(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"state": ""})
 	})
+	mockCheckRuns(mux, "other-org", "other-repo", "def456", nil)
 
 	client, teardown := newTestClient(t, mux)
 	defer teardown()
@@ -503,6 +504,7 @@ func TestIsCIPassingInRepo_Success(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"state": "success", "total_count": 3})
 	})
+	mockCheckRuns(mux, "owner", "repo", "sha1", nil)
 	client, teardown := newTestClient(t, mux)
 	defer teardown()
 
@@ -521,6 +523,7 @@ func TestIsCIPassingInRepo_Pending(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"state": "pending", "total_count": 2})
 	})
+	mockCheckRuns(mux, "owner", "repo", "sha2", nil)
 	client, teardown := newTestClient(t, mux)
 	defer teardown()
 
@@ -539,6 +542,7 @@ func TestIsCIPassingInRepo_Failure(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"state": "failure", "total_count": 1})
 	})
+	mockCheckRuns(mux, "owner", "repo", "sha3", nil)
 	client, teardown := newTestClient(t, mux)
 	defer teardown()
 
@@ -561,6 +565,7 @@ func TestIsCIPassingInRepo_NoCIConfigured(t *testing.T) {
 		// GitHub default: pending with zero checks when no CI is configured.
 		json.NewEncoder(w).Encode(map[string]any{"state": "pending", "total_count": 0})
 	})
+	mockCheckRuns(mux, "owner", "repo", "sha4", nil)
 	client, teardown := newTestClient(t, mux)
 	defer teardown()
 
@@ -579,6 +584,7 @@ func TestIsCIPassingInRepo_EmptyState(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"state": "", "total_count": 0})
 	})
+	mockCheckRuns(mux, "owner", "repo", "sha5", nil)
 	client, teardown := newTestClient(t, mux)
 	defer teardown()
 
@@ -614,6 +620,7 @@ func TestIsCIPassingInRepo_OverrideRepo(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"state": "success", "total_count": 1})
 	})
+	mockCheckRuns(mux, "other-org", "other-repo", "sha7", nil)
 	client, teardown := newTestClient(t, mux)
 	defer teardown()
 
