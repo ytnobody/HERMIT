@@ -103,8 +103,8 @@ language      = "ja"
 				continue
 			}
 			tools, _ := msg.Result["tools"].([]any)
-			if len(tools) != 16 {
-				t.Errorf("expected 16 tools, got %d", len(tools))
+			if len(tools) != 17 {
+				t.Errorf("expected 17 tools, got %d", len(tools))
 			}
 			return
 		case <-deadline:
@@ -207,8 +207,8 @@ language      = "ja"
 				continue
 			}
 			tools, _ := msg.Result["tools"].([]any)
-			if len(tools) != 16 {
-				t.Errorf("expected 16 tools, got %d", len(tools))
+			if len(tools) != 17 {
+				t.Errorf("expected 17 tools, got %d", len(tools))
 			}
 			return
 		case <-deadline:
@@ -314,8 +314,8 @@ language      = "ja"
 				continue
 			}
 			tools, _ := msg.Result["tools"].([]any)
-			if len(tools) != 16 {
-				t.Errorf("expected 16 tools, got %d", len(tools))
+			if len(tools) != 17 {
+				t.Errorf("expected 17 tools, got %d", len(tools))
 			}
 			return
 		case <-deadline:
