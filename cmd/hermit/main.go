@@ -470,6 +470,11 @@ func cmdServe() {
 
 	defaultRiskCfg, repoRiskCfgs := resolveRiskConfig(cfg)
 
+	requirementsCfg := mcp.RequirementsConfig{
+		Doc:         resolveRequirementsDoc(cfg),
+		TestCommand: cfg.Requirements.TestCommand,
+	}
+
 	model := mcp.ModelConfig{
 		Superintendent:       cfg.Model.Superintendent,
 		Engineer:             cfg.Model.Engineer,
@@ -479,7 +484,7 @@ func cmdServe() {
 		AnalystEffort:        resolveAnalystEffort(cfg),
 	}
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model, requirementsCfg); err != nil {
 		fatal(err.Error())
 	}
 }
@@ -539,6 +544,17 @@ func runRequirementsHearingCheck(rootDir string, cfg Config, client *gh.Client) 
 // [requirements].doc is not set in harness.toml.
 const defaultRequirementsDoc = "REQUIREMENTS.md"
 
+// resolveRequirementsDoc returns the effective requirements-document path
+// (relative to the project root) used by both the startup reconcile sweep
+// and the run_requirements_sweep MCP tool: [requirements].doc when set,
+// otherwise defaultRequirementsDoc.
+func resolveRequirementsDoc(cfg Config) string {
+	if cfg.Requirements.Doc != "" {
+		return cfg.Requirements.Doc
+	}
+	return defaultRequirementsDoc
+}
+
 // runRequirementsSweep runs the requirements reconcile sweep (Issue #106) at
 // `hermit serve` startup: it parses the requirements document for "## REQ-xxx:"
 // blocks, runs each requirement's test via the configured test_command, and
@@ -549,63 +565,41 @@ const defaultRequirementsDoc = "REQUIREMENTS.md"
 // requirements-doc format yet (no doc file, or no test_command configured)
 // simply skips the sweep, and any sweep error is logged rather than fatal —
 // it must never prevent `hermit serve` from starting.
+//
+// The actual sweep-running logic lives in requirements.RunReconcileSweep so
+// that it is shared, unduplicated, with the run_requirements_sweep MCP tool
+// (internal/mcp/tools.go) added by Issue #128 — that tool lets the
+// Superintendent re-run this same sweep periodically (roughly hourly) from
+// within its own patrol loop, rather than only once at process startup.
 func runRequirementsSweep(rootDir string, cfg Config, client *gh.Client) {
-	docPath := cfg.Requirements.Doc
-	if docPath == "" {
-		docPath = defaultRequirementsDoc
-	}
-	docPath = filepath.Join(rootDir, docPath)
+	docPath := resolveRequirementsDoc(cfg)
 
-	data, err := os.ReadFile(docPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("requirements sweep: reading %s: %v", docPath, err)
-		}
-		return
-	}
-	if cfg.Requirements.TestCommand == "" {
-		log.Printf("requirements sweep: %s found but [requirements].test_command is not set in harness.toml; skipping", docPath)
-		return
-	}
-
-	reqs, err := requirements.Parse(string(data))
-	if err != nil {
-		log.Printf("requirements sweep: parsing %s: %v", docPath, err)
-		return
-	}
-	if len(reqs) == 0 {
-		return
-	}
-
-	results, err := requirements.Sweep(reqs, requirements.SweepOptions{
-		Runner: requirements.CommandRunner{Template: cfg.Requirements.TestCommand},
-		Issues: requirements.NewGitHubIssueClient(client),
-		Hashes: requirements.NewFileHashStore(rootDir),
-	})
+	summary, err := requirements.RunReconcileSweep(rootDir, docPath, cfg.Requirements.TestCommand, requirements.NewGitHubIssueClient(client))
 	if err != nil {
 		log.Printf("requirements sweep: %v", err)
 		return
 	}
-
-	var satisfied, unimplemented, regressed, skipped, issuesCreated int
-	for _, r := range results {
-		switch r.Status {
-		case requirements.Satisfied:
-			satisfied++
-		case requirements.Unimplemented:
-			unimplemented++
-		case requirements.Regressed:
-			regressed++
-		case requirements.Skipped:
-			skipped++
+	if summary.Skipped {
+		// Quiet skips (no doc yet, or a doc with no REQ-ID blocks yet) stay
+		// silent at startup, matching the original behavior of this
+		// function — most projects haven't adopted the requirements-doc
+		// workflow yet, and logging about that on every `hermit serve`
+		// start would just be noise. Non-quiet skips (e.g. a doc exists but
+		// test_command isn't configured) are still worth a log line since
+		// they indicate a fixable misconfiguration.
+		if !summary.Quiet {
+			log.Printf("requirements sweep: %s; skipping", summary.SkipReason)
 		}
+		return
+	}
+
+	for _, r := range summary.Results {
 		if r.IssueCreated {
-			issuesCreated++
 			log.Printf("requirements sweep: opened %s issue for %s", r.IssueKind, r.ReqID)
 		}
 	}
 	log.Printf("requirements sweep: %d satisfied, %d unimplemented, %d regressed, %d skipped (manual), %d issue(s) opened",
-		satisfied, unimplemented, regressed, skipped, issuesCreated)
+		summary.Satisfied, summary.Unimplemented, summary.Regressed, summary.SkippedManual, summary.IssuesOpened)
 }
 
 func cmdCleanup() {

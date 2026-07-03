@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -70,9 +72,25 @@ type mockGithubClient struct {
 	postedComments []postedComment
 	addedLabels    []addedLabel
 	addLabelErr    error
+
+	// createdIssueTitles records the titles passed to CreateIssue (used by
+	// run_requirements_sweep tests to assert on issues opened by the
+	// reconcile sweep).
+	createdIssueTitles []string
+	createIssueErr     error
+	nextIssueNum       int
 }
 
 func (m *mockGithubClient) CheckRateLimit(_ int) error { return nil }
+
+func (m *mockGithubClient) CreateIssue(title, _ string) (int, error) {
+	if m.createIssueErr != nil {
+		return 0, m.createIssueErr
+	}
+	m.nextIssueNum++
+	m.createdIssueTitles = append(m.createdIssueTitles, title)
+	return m.nextIssueNum, nil
+}
 
 func (m *mockGithubClient) ListOpenIssues(_ string) ([]gh.Issue, error) {
 	return m.issues, m.issuesErr
@@ -188,7 +206,7 @@ func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string)
 func newTestServerWithReadiness(t *testing.T, client githubClient, trigger string, readinessCfg readiness.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{})
 	return s
 }
 
@@ -198,14 +216,14 @@ func newTestServerWithReadiness(t *testing.T, client githubClient, trigger strin
 func newTestServerWithRisk(t *testing.T, client githubClient, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{}, RequirementsConfig{})
 	return s
 }
 
 func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model, RequirementsConfig{})
 	return s
 }
 
@@ -215,7 +233,18 @@ func newTestServerWithRoot(t *testing.T, client githubClient) (*server.MCPServer
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{})
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{})
+	return s, root
+}
+
+// newTestServerWithRequirements is like newTestServerWithRoot but also wires
+// a RequirementsConfig, returning rootDir so tests can write a requirements
+// document under it before invoking run_requirements_sweep.
+func newTestServerWithRequirements(t *testing.T, client githubClient, requirementsCfg RequirementsConfig) (*server.MCPServer, string) {
+	t.Helper()
+	root := t.TempDir()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, requirementsCfg)
 	return s, root
 }
 
@@ -1304,5 +1333,134 @@ func TestMergePR_UsesPerRepoRiskOverrideForHighRiskComment(t *testing.T) {
 	}
 	if body := mock.postedComments[0].body; !strings.Contains(body, "src/main.py is in a high-risk path") {
 		t.Errorf("expected risk comment to reflect the per-repo override reason, got %q", body)
+	}
+}
+
+// --- run_requirements_sweep (Issue #128) ----------------------------------
+
+const twoReqDoc = `## REQ-001: First thing
+- 受け入れ条件: does the first thing
+
+## REQ-002: Second thing
+- 受け入れ条件: does the second thing
+`
+
+// twoReqTestCommand always reports a "RUN" marker for the requested req_id
+// (so neither requirement is ever classified as "not found"/unimplemented)
+// but only exits 0 for REQ-001 — REQ-002 is deliberately made to fail so a
+// single sweep run exercises both the "satisfied" and "regressed" (and
+// therefore issue-opening) code paths in one call.
+const twoReqTestCommand = `echo "=== RUN {req_id}"; test "{req_id}" = "REQ-001"`
+
+func TestRunRequirementsSweep_ReturnsSummaryAndOpensIssues(t *testing.T) {
+	mock := &mockGithubClient{}
+	s, root := newTestServerWithRequirements(t, mock, RequirementsConfig{
+		Doc:         "REQUIREMENTS.md",
+		TestCommand: twoReqTestCommand,
+	})
+	if err := os.WriteFile(filepath.Join(root, "REQUIREMENTS.md"), []byte(twoReqDoc), 0o644); err != nil {
+		t.Fatalf("writing requirements doc: %v", err)
+	}
+
+	result := callTool(t, s, "run_requirements_sweep", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if skipped, _ := got["skipped"].(bool); skipped {
+		t.Fatalf("expected skipped=false, got %v (full: %v)", got["skipped"], got)
+	}
+	if satisfied, _ := got["satisfied"].(float64); satisfied != 1 {
+		t.Errorf("expected satisfied=1, got %v", got["satisfied"])
+	}
+	if regressed, _ := got["regressed"].(float64); regressed != 1 {
+		t.Errorf("expected regressed=1, got %v", got["regressed"])
+	}
+	if issuesOpened, _ := got["issues_opened"].(float64); issuesOpened != 1 {
+		t.Errorf("expected issues_opened=1, got %v", got["issues_opened"])
+	}
+	summary, _ := got["summary"].(string)
+	if !strings.Contains(summary, "1 satisfied") || !strings.Contains(summary, "1 regressed") || !strings.Contains(summary, "1 issue(s) opened") {
+		t.Errorf("expected summary line to mirror the startup log format, got %q", summary)
+	}
+	if len(mock.createdIssueTitles) != 1 {
+		t.Fatalf("expected exactly one issue to be opened, got %d: %v", len(mock.createdIssueTitles), mock.createdIssueTitles)
+	}
+	if !strings.Contains(mock.createdIssueTitles[0], "REQ-002") {
+		t.Errorf("expected the opened issue to reference REQ-002, got %q", mock.createdIssueTitles[0])
+	}
+}
+
+func TestRunRequirementsSweep_NoDocFound_SkipsWithReason(t *testing.T) {
+	mock := &mockGithubClient{}
+	s, _ := newTestServerWithRequirements(t, mock, RequirementsConfig{
+		Doc:         "REQUIREMENTS.md",
+		TestCommand: twoReqTestCommand,
+	})
+	// Deliberately do not write a requirements doc into root.
+
+	result := callTool(t, s, "run_requirements_sweep", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success (skip, not error), got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if skipped, _ := got["skipped"].(bool); !skipped {
+		t.Fatalf("expected skipped=true, got %v", got)
+	}
+	reason, _ := got["reason"].(string)
+	if !strings.Contains(reason, "no requirements document found") {
+		t.Errorf("expected reason to mention no requirements document, got %q", reason)
+	}
+	if len(mock.createdIssueTitles) != 0 {
+		t.Errorf("expected no issues to be opened when the sweep is skipped, got %v", mock.createdIssueTitles)
+	}
+}
+
+func TestRunRequirementsSweep_NoTestCommand_SkipsWithReason(t *testing.T) {
+	mock := &mockGithubClient{}
+	s, root := newTestServerWithRequirements(t, mock, RequirementsConfig{
+		Doc:         "REQUIREMENTS.md",
+		TestCommand: "", // not configured
+	})
+	if err := os.WriteFile(filepath.Join(root, "REQUIREMENTS.md"), []byte(twoReqDoc), 0o644); err != nil {
+		t.Fatalf("writing requirements doc: %v", err)
+	}
+
+	result := callTool(t, s, "run_requirements_sweep", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success (skip, not error), got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if skipped, _ := got["skipped"].(bool); !skipped {
+		t.Fatalf("expected skipped=true, got %v", got)
+	}
+	reason, _ := got["reason"].(string)
+	if !strings.Contains(reason, "test_command is not set") {
+		t.Errorf("expected reason to mention test_command, got %q", reason)
+	}
+	if len(mock.createdIssueTitles) != 0 {
+		t.Errorf("expected no issues to be opened when the sweep is skipped, got %v", mock.createdIssueTitles)
 	}
 }

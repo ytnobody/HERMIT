@@ -9,31 +9,35 @@ Repeat the following cycle.
 1. If a `.hermit-quit` file exists in the project root, stop the loop entirely: do **not** call `ScheduleWakeup` again, and end the Superintendent session (quit). This is a terminal stop, unlike pause — it is not resumed by `hermit resume`; starting `/hermit` again is required to resume autonomous operation.
 2. If a `.hermit-paused` file exists in the project root, wait 30 seconds and repeat this step (paused)
 3. Retrieve open Issues with `list_issues`
-4. Treat any Issue labeled `requirements` (or whose title starts with `[Requirements]`) as a **standing requirements-hearing channel**, not a work item — this is where non-engineers converse with HERMIT to create/update the requirements document. Exclude these Issues from the Engineer-spawning steps below (steps 5–6), and instead:
+4. Treat any Issue labeled `requirements` (or whose title starts with `[Requirements]`) as a **standing requirements-hearing channel**, not a work item — this is where non-engineers converse with HERMIT to create/update the requirements document. Exclude these Issues from the Engineer-spawning steps below (steps 6–7), and instead:
    - Call `get_issue_comments` with a `since` timestamp set to the last check time for that Issue (store the current time before calling)
    - If there are new comments authored by a human (not HERMIT's own account), spawn an Analyst to respond — call the Agent tool with `model: "{{ .AnalystModel }}"`{{ if .AnalystEffort }} and `effort: "{{ .AnalystEffort }}"`{{ end }}, passing the Issue number, the new comment bodies, and their comment URLs. See "Your Role: Analyst" below for what the Analyst must do.
    - Update the stored last-check timestamp for that Issue to now
-5. If there are no non-requirements Issues, wait 60 seconds and return to step 1
-6. For each remaining Issue (up to {{ .MaxEngineers }} at a time), perform a granularity check:
+5. Run the requirements reconcile sweep roughly once an hour using `run_requirements_sweep`, tracking a "last requirements-sweep time" across cycles the same way step 4 tracks each hearing Issue's own last-checked comment timestamp (store the current time before calling):
+   - Only call `run_requirements_sweep` when at least 3600 seconds have elapsed since the last recorded sweep time; otherwise skip this step for the current cycle
+   - Update the stored last-sweep timestamp to now after calling
+   - Note this is distinct from step 4: step 4 is about a human dictating new/changed requirements via conversation; this step is about detecting when already-declared requirements have silently regressed or gone unimplemented in the code, by re-running the reconcile sweep against the current requirements document
+6. If there are no non-requirements Issues, wait 60 seconds and return to step 1
+7. For each remaining Issue (up to {{ .MaxEngineers }} at a time), perform a granularity check:
    - If the Issue body is empty, extremely short, or covers multiple independent features, judge it as **ambiguous or too large**
    - Ambiguous/oversized Issues: post a `[Clarification Needed]` comment via `add_issue_comment` and skip
    - For Issues of appropriate scope only:
      a. Mark as in-progress with `assign_issue` (assignee: your own username)
      b. Create a worktree with `create_worktree` (base_branch: default branch)
-7. **Spawn all Engineers for the Issues prepared in step 6 in parallel at once using the Agent tool**
+8. **Spawn all Engineers for the Issues prepared in step 7 in parallel at once using the Agent tool**
    - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
    - Call the Agent tool with `model: "{{ .EngineerModel }}"`{{ if .EngineerEffort }} and `effort: "{{ .EngineerEffort }}"`{{ end }} so each Engineer runs with the model{{ if .EngineerEffort }}/effort{{ end }} configured in `harness.toml`'s `[model]` section
    - If the parallel count exceeds {{ .MaxEngineers }}, process the first {{ .MaxEngineers }} and defer the rest to the next cycle
-8. Wait for all Engineers to complete
-9. Run `evaluate_risk` on the PR for each Issue
-   - LOW / MEDIUM: run `merge_pr` with `worktree_path`/`branch` so the worktree is cleaned up automatically
-   - HIGH: `evaluate_risk` auto-posts a generic risk comment (`⚠️ HERMIT: HIGH risk detected.\nReasons: [...]`) restating the `risk_reasons`. That comment is not a review — before skipping, perform a substantive review of the PR yourself:
-     - Read the actual diff (not just the file paths / line counts in `risk_reasons`)
-     - Assess correctness, test coverage of the changed behavior, and consistency with the linked Issue's requirements
-     - Check whether the branch is stale relative to the base branch in a way that could hide semantic conflicts, not just textual `mergeable` conflicts
-     - Post your findings as a separate PR comment via `add_issue_comment`: a short summary of what changed, anything concerning, and an explicit recommendation (e.g. "looks safe to merge pending approval" vs. "found X, should be fixed first")
-     - Skip merging and wait for a human decision
-10. Return to step 1
+9. Wait for all Engineers to complete
+10. Run `evaluate_risk` on the PR for each Issue
+    - LOW / MEDIUM: run `merge_pr` with `worktree_path`/`branch` so the worktree is cleaned up automatically
+    - HIGH: `evaluate_risk` auto-posts a generic risk comment (`⚠️ HERMIT: HIGH risk detected.\nReasons: [...]`) restating the `risk_reasons`. That comment is not a review — before skipping, perform a substantive review of the PR yourself:
+      - Read the actual diff (not just the file paths / line counts in `risk_reasons`)
+      - Assess correctness, test coverage of the changed behavior, and consistency with the linked Issue's requirements
+      - Check whether the branch is stale relative to the base branch in a way that could hide semantic conflicts, not just textual `mergeable` conflicts
+      - Post your findings as a separate PR comment via `add_issue_comment`: a short summary of what changed, anything concerning, and an explicit recommendation (e.g. "looks safe to merge pending approval" vs. "found X, should be fixed first")
+      - Skip merging and wait for a human decision
+11. Return to step 1
 
 ---
 

@@ -46,6 +46,11 @@ type githubClient interface {
 	GetDefaultBranch() (string, error)
 	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
 	GetRecentPRComments(prNumber int, since string) ([]gh.PRComment, error)
+	// CreateIssue is used by the run_requirements_sweep tool to open issues
+	// for unimplemented/regressed/text-changed requirements via
+	// requirements.NewGitHubIssueClient — see requirements.ghClient, which
+	// this interface must remain a superset of.
+	CreateIssue(title, body string) (int, error)
 }
 
 // resolveRiskConfig returns the risk.Config to apply for the given owner/repo
@@ -63,7 +68,7 @@ func resolveRiskConfig(owner, repo string, defaultRiskConfig risk.Config, repoRi
 	return defaultRiskConfig
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig) {
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -573,6 +578,39 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			b, err := json.Marshal(map[string]any{"pr_number": num, "comments": comments, "count": len(comments)})
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("run_requirements_sweep",
+			mcp.WithDescription("Runs the requirements reconcile sweep (Issue #106) on demand against the configured requirements document and [requirements].test_command: parses \"## REQ-xxx:\" blocks, runs each requirement's test, and opens (deduped) GitHub issues for requirements that are unimplemented, regressed, or whose text changed since the last sweep. Returns a summary of counts and issues opened. If no requirements document is found or no test_command is configured, returns skipped=true with a reason instead of an error. The Superintendent loop should call this roughly hourly (tracking its own \"last sweep\" timestamp the same way it tracks get_recent_pr_comments' \"since\"), not on every cycle."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			summary, err := requirements.RunReconcileSweep(rootDir, requirementsCfg.Doc, requirementsCfg.TestCommand, requirements.NewGitHubIssueClient(client))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if summary.Skipped {
+				b, _ := json.Marshal(map[string]any{
+					"skipped": true,
+					"reason":  summary.SkipReason,
+				})
+				return mcp.NewToolResultText(string(b)), nil
+			}
+			b, err := json.Marshal(map[string]any{
+				"skipped":        false,
+				"satisfied":      summary.Satisfied,
+				"unimplemented":  summary.Unimplemented,
+				"regressed":      summary.Regressed,
+				"skipped_manual": summary.SkippedManual,
+				"issues_opened":  summary.IssuesOpened,
+				"summary": fmt.Sprintf("%d satisfied, %d unimplemented, %d regressed, %d skipped (manual), %d issue(s) opened",
+					summary.Satisfied, summary.Unimplemented, summary.Regressed, summary.SkippedManual, summary.IssuesOpened),
+			})
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
