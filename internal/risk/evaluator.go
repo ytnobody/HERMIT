@@ -20,8 +20,15 @@ const (
 // particular configuration file format so it can be constructed directly in
 // tests or built from harness.toml (see cmd/hermit for the TOML mapping).
 type Config struct {
-	HighPaths           []string `json:"high_paths"`
-	MediumPaths         []string `json:"medium_paths"`
+	HighPaths   []string `json:"high_paths"`
+	MediumPaths []string `json:"medium_paths"`
+	// ExcludePaths lists path prefixes that must never contribute a
+	// path-based HIGH/MEDIUM signal, even if they also match a prefix in
+	// HighPaths or MediumPaths. This is for scaffold/doc content that lives
+	// under an otherwise risky directory (e.g. cmd/hermit/templates/ holds
+	// template text, not executable cmd/ program logic) rather than a
+	// one-off hardcoded exception in the matching logic.
+	ExcludePaths        []string `json:"exclude_paths"`
 	HighFileThreshold   int      `json:"high_file_threshold"`
 	HighLineThreshold   int      `json:"high_line_threshold"`
 	MediumFileThreshold int      `json:"medium_file_threshold"`
@@ -33,8 +40,14 @@ type Config struct {
 // harness.toml, preserving backward compatibility for existing projects.
 func DefaultConfig() Config {
 	return Config{
-		HighPaths:           []string{"cmd/", "go.mod", ".github/"},
-		MediumPaths:         []string{"internal/"},
+		HighPaths:   []string{"cmd/", "go.mod", ".github/"},
+		MediumPaths: []string{"internal/"},
+		// cmd/hermit/templates/ holds scaffold/doc content (CLAUDE.md.tmpl,
+		// harness.toml.tmpl, command markdown copied into user projects) that
+		// happens to live under the cmd/ prefix but carries none of the risk
+		// of actual CLI-entrypoint program logic, so it's excluded from
+		// path-based matching by default.
+		ExcludePaths:        []string{"cmd/hermit/templates/"},
 		HighFileThreshold:   20,
 		HighLineThreshold:   500,
 		MediumFileThreshold: 10,
@@ -54,6 +67,9 @@ func Merge(base, override Config) Config {
 	}
 	if len(override.MediumPaths) > 0 {
 		result.MediumPaths = override.MediumPaths
+	}
+	if len(override.ExcludePaths) > 0 {
+		result.ExcludePaths = override.ExcludePaths
 	}
 	if override.HighFileThreshold > 0 {
 		result.HighFileThreshold = override.HighFileThreshold
@@ -91,6 +107,9 @@ func EvaluateWithConfig(files []gh.PRFile, additions, deletions int, cfg Config)
 		reasons = append(reasons, fmt.Sprintf("%d or more lines changed", cfg.HighLineThreshold))
 	}
 	for _, f := range files {
+		if isPathExcludedFromMatching(f.Filename, cfg) {
+			continue
+		}
 		for _, p := range cfg.HighPaths {
 			if strings.HasPrefix(f.Filename, p) || f.Filename == p {
 				reasons = append(reasons, f.Filename+" is in a high-risk path")
@@ -108,6 +127,9 @@ func EvaluateWithConfig(files []gh.PRFile, additions, deletions int, cfg Config)
 		reasons = append(reasons, fmt.Sprintf("%d or more lines changed", cfg.MediumLineThreshold))
 	}
 	for _, f := range files {
+		if isPathExcludedFromMatching(f.Filename, cfg) {
+			continue
+		}
 		for _, p := range cfg.MediumPaths {
 			if strings.HasPrefix(f.Filename, p) || f.Filename == p {
 				reasons = append(reasons, f.Filename+" has changes in a medium-risk path")
@@ -120,4 +142,31 @@ func EvaluateWithConfig(files []gh.PRFile, additions, deletions int, cfg Config)
 	}
 
 	return Low, nil
+}
+
+// isPathExcludedFromMatching reports whether filename must be skipped when
+// evaluating cfg.HighPaths/cfg.MediumPaths prefix matches. Two categories are
+// excluded:
+//
+//  1. Go test files (*_test.go): adding or modifying tests should never by
+//     itself escalate risk, since tests reduce risk rather than increase it.
+//     This is unconditional and not configurable via cfg, since it reflects
+//     a general property of test files rather than a project-specific
+//     policy choice.
+//  2. Any path matching a cfg.ExcludePaths prefix, e.g. scaffold/template
+//     content that happens to live under an otherwise high-risk directory.
+//
+// Line/file-count thresholds are unaffected by this exclusion: a diff that
+// only touches excluded paths can still trigger HIGH/MEDIUM if it's large
+// enough on its own.
+func isPathExcludedFromMatching(filename string, cfg Config) bool {
+	if strings.HasSuffix(filename, "_test.go") {
+		return true
+	}
+	for _, p := range cfg.ExcludePaths {
+		if strings.HasPrefix(filename, p) {
+			return true
+		}
+	}
+	return false
 }

@@ -41,8 +41,12 @@ type RepoConfig struct {
 // zero threshold) falls back to the parent level's value: [repos.risk] falls
 // back to [risk], which itself falls back to risk.DefaultConfig().
 type RiskConfig struct {
-	HighPaths           []string `toml:"high_paths"`
-	MediumPaths         []string `toml:"medium_paths"`
+	HighPaths   []string `toml:"high_paths"`
+	MediumPaths []string `toml:"medium_paths"`
+	// ExcludePaths lists path prefixes (e.g. scaffold/template directories)
+	// that never contribute a path-based HIGH/MEDIUM signal, even if they
+	// also fall under a HighPaths/MediumPaths prefix. See risk.Config.
+	ExcludePaths        []string `toml:"exclude_paths"`
 	HighFileThreshold   int      `toml:"high_file_threshold"`
 	HighLineThreshold   int      `toml:"high_line_threshold"`
 	MediumFileThreshold int      `toml:"medium_file_threshold"`
@@ -54,6 +58,7 @@ func (r RiskConfig) toRiskConfig() risk.Config {
 	return risk.Config{
 		HighPaths:           r.HighPaths,
 		MediumPaths:         r.MediumPaths,
+		ExcludePaths:        r.ExcludePaths,
 		HighFileThreshold:   r.HighFileThreshold,
 		HighLineThreshold:   r.HighLineThreshold,
 		MediumFileThreshold: r.MediumFileThreshold,
