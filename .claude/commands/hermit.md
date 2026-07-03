@@ -14,4 +14,9 @@ Each cycle:
 7. Wait for all Engineers to complete
 8. Run `evaluate_risk` on the PR for each Issue
    - LOW / MEDIUM: run `merge_pr` with `worktree_path`/`branch` so the worktree is cleaned up automatically
-   - HIGH: post a comment on the PR and skip
+   - HIGH: `evaluate_risk` auto-posts a generic risk comment (`⚠️ HERMIT: HIGH risk detected.\nReasons: [...]`) restating the `risk_reasons`. That comment is not a review — before skipping, perform a substantive review of the PR yourself:
+     - Read the actual diff (not just the file paths / line counts in `risk_reasons`)
+     - Assess correctness, test coverage of the changed behavior, and consistency with the linked Issue's requirements
+     - Check whether the branch is stale relative to the base branch in a way that could hide semantic conflicts, not just textual `mergeable` conflicts
+     - Post your findings as a separate PR comment via `add_issue_comment`: a short summary of what changed, anything concerning, and an explicit recommendation (e.g. "looks safe to merge pending approval" vs. "found X, should be fixed first")
+     - Skip merging and wait for a human decision
