@@ -214,7 +214,7 @@ func newTestServerWithRoot(t *testing.T, client githubClient) (*server.MCPServer
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), ModelConfig{})
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{})
 	return s, root
 }
 
@@ -1267,7 +1267,15 @@ func TestMergePR_UsesPerRepoRiskOverrideForHighRiskComment(t *testing.T) {
 	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if merged, ok := got["merged"].(bool); !ok || !merged {
-		t.Errorf("expected merged=true, got %v", got["merged"])
+	// The per-repo override classifies this as HIGH, so merge_pr blocks by
+	// default (see TestMergePR_highRisk_blocksByDefault) rather than merging.
+	if merged, _ := got["merged"].(bool); merged {
+		t.Errorf("expected merged=false for HIGH risk PR without force, got %v", got["merged"])
+	}
+	if len(mock.postedComments) != 1 {
+		t.Fatalf("expected exactly one risk comment posted, got %d", len(mock.postedComments))
+	}
+	if body := mock.postedComments[0].body; !strings.Contains(body, "src/main.py is in a high-risk path") {
+		t.Errorf("expected risk comment to reflect the per-repo override reason, got %q", body)
 	}
 }
