@@ -99,6 +99,20 @@ Edit the "Coding Guidelines" section in `CLAUDE.md` to match your project.
 
 ---
 
+## Security
+
+**Read this before running HERMIT against a public repository.**
+
+- **Issue/comment bodies are injected directly into agent context.** HERMIT passes the raw text of Issues and comments to the Superintendent and Engineer agents so they can act on them. On a public repo, anyone who can open an Issue or leave a comment can attempt to influence that context — including with adversarial or prompt-injection-style instructions. Do not run HERMIT against repositories where you do not trust every person who can author an Issue or comment.
+- **`trigger_comment` limits *who can start* processing, not *what the Issue contains*.** Setting `trigger_comment` (e.g. `"/hermit"`) means HERMIT only picks up Issues where someone has posted that exact comment, which narrows the entry point to people who can comment on the repo. It does **not** sanitize, filter, or otherwise mitigate adversarial content already present in the Issue body or in other comments — that content is still handed to the agent once the Issue is picked up.
+- **Recommended operating modes for public repositories:**
+  - **(a) Restrict Issue authorship to trusted collaborators.** Use repository settings, a bot/label-based intake process, or org membership requirements so that only trusted people can create Issues HERMIT will act on.
+  - **(b) Disable auto-merge entirely.** Skip the `merge_pr` step regardless of `evaluate_risk`'s result, and require a human to review and merge every PR HERMIT opens, even ones classified LOW or MEDIUM risk. This bounds the blast radius of any adversarial instruction to "opened a PR," not "got code merged."
+  - In practice, many public-repo operators will want both: trusted-author Issues *and* human-reviewed merges.
+- **Future work (not yet implemented):** an Issue-author allowlist (e.g. only process Issues from repository collaborators or an explicit list of GitHub usernames) is being considered as a built-in mitigation. Until it exists, use the operating modes above.
+
+---
+
 ## Usage
 
 Since `hermit install` registers it as an MCP server via `claude mcp add` (project-local scope), **Claude Code automatically starts `hermit serve` on launch**. No need to start it manually in another terminal.
