@@ -35,7 +35,9 @@
       "mcp__hermit__get_issue_comments",
       "mcp__hermit__get_lessons",
       "mcp__hermit__notify",
-      "mcp__hermit__review_pr"
+      "mcp__hermit__review_pr",
+      "mcp__hermit__close_issue",
+      "mcp__hermit__run_requirements_sweep"
     ]
   }
 }
