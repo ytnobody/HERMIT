@@ -391,4 +391,19 @@ func TestMerge(t *testing.T) {
 			t.Errorf("ExcludePaths = %+v, want [scripts/]", got.ExcludePaths)
 		}
 	})
+
+	t.Run("RequireHumanApproval is never cascaded from override (global-only, Issue #134)", func(t *testing.T) {
+		baseTrue := base
+		baseTrue.RequireHumanApproval = true
+
+		got := Merge(baseTrue, Config{RequireHumanApproval: false})
+		if !got.RequireHumanApproval {
+			t.Errorf("Merge() dropped base.RequireHumanApproval=true when override=false; got %+v", got)
+		}
+
+		got = Merge(base, Config{RequireHumanApproval: true})
+		if got.RequireHumanApproval {
+			t.Errorf("Merge() cascaded override.RequireHumanApproval=true onto base; got %+v, want it to stay false (base's value)", got)
+		}
+	})
 }

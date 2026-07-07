@@ -99,6 +99,20 @@ Edit the "Coding Guidelines" section in `CLAUDE.md` to match your project.
 
 ---
 
+## Security
+
+**Read this before running HERMIT against a public repository.**
+
+- **Issue/comment bodies are injected directly into agent context.** HERMIT passes the raw text of Issues and comments to the Superintendent and Engineer agents so they can act on them. On a public repo, anyone who can open an Issue or leave a comment can attempt to influence that context — including with adversarial or prompt-injection-style instructions. Do not run HERMIT against repositories where you do not trust every person who can author an Issue or comment.
+- **`trigger_comment` limits *who can start* processing, not *what the Issue contains*.** Setting `trigger_comment` (e.g. `"/hermit"`) means HERMIT only picks up Issues where someone has posted that exact comment, which narrows the entry point to people who can comment on the repo. It does **not** sanitize, filter, or otherwise mitigate adversarial content already present in the Issue body or in other comments — that content is still handed to the agent once the Issue is picked up.
+- **Recommended operating modes for public repositories:**
+  - **(a) Restrict Issue authorship to trusted collaborators.** Use repository settings, a bot/label-based intake process, or org membership requirements so that only trusted people can create Issues HERMIT will act on.
+  - **(b) Disable auto-merge entirely.** Skip the `merge_pr` step regardless of `evaluate_risk`'s result, and require a human to review and merge every PR HERMIT opens, even ones classified LOW or MEDIUM risk. This bounds the blast radius of any adversarial instruction to "opened a PR," not "got code merged."
+  - In practice, many public-repo operators will want both: trusted-author Issues *and* human-reviewed merges.
+- **Future work (not yet implemented):** an Issue-author allowlist (e.g. only process Issues from repository collaborators or an explicit list of GitHub usernames) is being considered as a built-in mitigation. Until it exists, use the operating modes above.
+
+---
+
 ## Usage
 
 Since `hermit install` registers it as an MCP server via `claude mcp add` (project-local scope), **Claude Code automatically starts `hermit serve` on launch**. No need to start it manually in another terminal.
@@ -212,6 +226,7 @@ engineer       = "claude-sonnet-5"   # model used for Engineer roles
 # high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
 # medium_file_threshold = 10    # MEDIUM risk when this many or more files changed
 # medium_line_threshold = 200   # MEDIUM risk when this many or more lines changed
+# require_human_approval = false  # "warm-up mode": when true, merge_pr always blocks auto-merge regardless of risk level, until a human passes force: true
 
 # [readiness]
 # min_body_length                = 40                    # minimum non-whitespace chars required in the Issue body
@@ -263,6 +278,10 @@ hermit use claude-cheap  # Sonnet for Superintendent, Haiku for Engineers (cost-
 ### Risk Policy
 
 The `[risk]` section controls how `evaluate_risk` and `merge_pr` classify a PR as LOW, MEDIUM, or HIGH risk: which path prefixes are considered high/medium risk, and the file-count/line-count thresholds for each level. Any field left unset falls back to HERMIT's built-in default (shown commented out above), so omitting `[risk]` entirely preserves the original hardcoded behavior. This is especially useful for non-Go projects or repos with a different directory layout than `cmd/`, `internal/`, `go.mod`. In multi-repo mode, each `[[repos]]` entry may define its own `[repos.risk]` sub-table to override `[risk]` for that repo only (see below).
+
+#### Warm-Up Mode (`require_human_approval`)
+
+Structural risk heuristics (changed file count, line count, risky paths) can underestimate small-but-critical changes — a one-line fix to auth logic or error handling can come out LOW and auto-merge, while a large mechanical rename gets flagged HIGH. Setting `require_human_approval = true` in `[risk]` puts HERMIT into "warm-up mode": `merge_pr` always blocks auto-merge — for LOW, MEDIUM, and HIGH risk PRs alike — via the same gate already used for HIGH-risk PRs, until a human reviews the PR and re-runs `merge_pr` with `force: true`. It does not change `evaluate_risk`'s own computed level or reasons; it only changes `merge_pr`'s gating decision. This is a single global flag with no per-repo override, even in multi-repo mode — it applies uniformly across every `[[repos]]` entry regardless of any `[repos.risk]` sub-table.
 
 ### Webhook Notifications
 

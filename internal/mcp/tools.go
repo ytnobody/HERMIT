@@ -254,7 +254,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("merge_pr",
-			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Posts a risk comment and, by default, blocks the merge when the risk level is HIGH (returns merged: false). Pass force: true to merge a HIGH-risk PR anyway."),
+			mcp.WithDescription("Merges the PR after CI passes, removes the worktree, and scores the lesson. Posts a risk comment and, by default, blocks the merge when the risk level is HIGH (returns merged: false). When harness.toml's [risk].require_human_approval is true (\"warm-up mode\"), auto-merge is always blocked regardless of risk level. Pass force: true to merge anyway in either case."),
 			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
 			mcp.WithString("worktree_path", mcp.Description("Path to the worktree to remove after merge (optional)")),
 			mcp.WithString("branch", mcp.Description("Branch name to remove after merge (optional)")),
@@ -279,10 +279,19 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			if level == risk.High {
 				msg := fmt.Sprintf("⚠️ HERMIT: HIGH risk detected.\nReasons: %v", reasons)
 				_ = client.PostCommentInRepo(num, msg, owner, repo)
-				if !force {
-					b, _ := json.Marshal(map[string]any{"merged": false, "reason": "high risk", "risk_reasons": reasons})
-					return mcp.NewToolResultText(string(b)), nil
+			}
+			// Warm-up mode (riskCfg.RequireHumanApproval) blocks auto-merge via
+			// the same gate as a HIGH risk level, regardless of the level
+			// actually computed above. evaluate_risk's own level/reasons are
+			// unaffected — this only changes merge_pr's gating decision. force
+			// overrides both HIGH risk and warm-up mode identically.
+			if !force && (level == risk.High || riskCfg.RequireHumanApproval) {
+				reason := "high risk"
+				if riskCfg.RequireHumanApproval && level != risk.High {
+					reason = "human approval required (warm-up mode)"
 				}
+				b, _ := json.Marshal(map[string]any{"merged": false, "reason": reason, "risk_reasons": reasons})
+				return mcp.NewToolResultText(string(b)), nil
 			}
 			if !status.CIPassing {
 				b, _ := json.Marshal(map[string]any{"merged": false, "reason": "CI failing"})
