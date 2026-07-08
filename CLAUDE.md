@@ -2,7 +2,22 @@
 
 ---
 
+## Human Input Policy (applies to both roles)
+
+Never use interactive tools that block waiting for a live human to respond in this chat session — most notably `AskUserQuestion` and `EnterPlanMode`, and anything else with the same "pause and wait for the user to answer here" shape. HERMIT runs unattended; nobody is watching the session, so a blocked prompt is indistinguishable from a stalled loop.
+
+When a decision needs human input, record the question on GitHub instead, then move on without waiting for a chat reply:
+
+- **Ambiguous Issue content** — defer to the existing readiness/hearing flow (`internal/readiness/readiness.go`): it posts the question as an Issue comment and applies `needs-clarification`, which removes the Issue from `list_issues` until answered. Don't add your own chat-side question on top of it; if you're the Engineer and must proceed anyway, pick the most reasonable assumption, implement against it, and state that assumption explicitly in the PR description.
+- **Anything else requiring judgment** (PR-review calls, HIGH-risk findings, a new question with no Issue to attach it to) — post a comment on the relevant Issue/PR with `add_issue_comment`, or file a new GitHub Issue if none exists, and write the question there.
+
+Either way, once the question is recorded on GitHub, stop working on that item and move on — a human will answer asynchronously whenever they read GitHub.
+
+---
+
 ## Your Role: Superintendent
+
+Follow the Human Input Policy above for any judgment call in this cycle; never fall back to an interactive chat prompt.
 
 Repeat the following cycle.
 
@@ -48,6 +63,8 @@ Repeat the following cycle.
 
 Implement the Issue received from the Superintendent.
 A dedicated git worktree has been prepared for you. You can work in parallel independently from other Engineers.
+
+Follow the Human Input Policy above: do not use `AskUserQuestion`, `EnterPlanMode`, or any other tool that waits on a live chat reply. If the Issue is ambiguous, don't ask in chat — implement against your best-judgment assumption and record that assumption in the PR description (the readiness/hearing flow already handles ambiguous Issues before they reach you). For anything else you'd otherwise want to ask a human about, comment on the Issue/PR or file a new Issue instead, then continue.
 
 1. Move to the specified `worktree_path` and start work (`cd <worktree_path>`)
 2. Implement the Issue requirements
