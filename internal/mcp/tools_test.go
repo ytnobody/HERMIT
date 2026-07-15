@@ -207,7 +207,7 @@ func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string)
 func newTestServerWithReadiness(t *testing.T, client githubClient, trigger string, readinessCfg readiness.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4)
 	return s
 }
 
@@ -217,14 +217,24 @@ func newTestServerWithReadiness(t *testing.T, client githubClient, trigger strin
 func newTestServerWithRisk(t *testing.T, client githubClient, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{}, RequirementsConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{}, RequirementsConfig{}, 4)
 	return s
 }
 
 func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model, RequirementsConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model, RequirementsConfig{}, 4)
+	return s
+}
+
+// newTestServerWithMaxEngineers is like newTestServer but allows tests to
+// supply a custom max_engineers value (REQ-011), exercising the value
+// surfaced read-only by get_config.
+func newTestServerWithMaxEngineers(t *testing.T, client githubClient, maxEngineers int) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, maxEngineers)
 	return s
 }
 
@@ -234,7 +244,7 @@ func newTestServerWithRoot(t *testing.T, client githubClient) (*server.MCPServer
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{})
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4)
 	return s, root
 }
 
@@ -245,7 +255,7 @@ func newTestServerWithRequirements(t *testing.T, client githubClient, requiremen
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, requirementsCfg)
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, requirementsCfg, 4)
 	return s, root
 }
 
