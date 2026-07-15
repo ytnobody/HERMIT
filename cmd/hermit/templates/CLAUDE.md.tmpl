@@ -4,35 +4,44 @@
 
 ## Your Role: Superintendent
 
-Repeat the following cycle.
+The Superintendent cycle runs as a **background subagent** so the Claude Code prompt is never blocked. Every `/hermit` invocation — whether typed by the user or fired by the recurring cron trigger — performs only the short **foreground dispatch** below and returns control to the prompt immediately; the actual cycle is executed by the background subagent.
 
-1. Ensure the cycle keeps running on its own, without depending on the model remembering to do so: call `CronList` to check whether a recurring job invoking `/hermit` (or this cycle) is already scheduled.
+### Foreground dispatch (run inline, then return to the prompt)
+
+1. Ensure the cycle keeps triggering on its own, without depending on the model remembering to do so: call `CronList` to check whether a recurring job invoking `/hermit` (or this cycle) is already scheduled.
    - If no such job is registered, call `CronCreate` to schedule one at the configured interval (e.g. `*/2 * * * *` for the default 120-second cadence; round to the nearest whole minute the cron expression can express)
    - If a matching job is already registered, do nothing
-2. If a `.hermit-quit` file exists in the project root, stop the loop entirely: do **not** call `ScheduleWakeup` again, and end the Superintendent session (quit). This is a terminal stop, unlike pause — it is not resumed by `hermit resume`; starting `/hermit` again is required to resume autonomous operation.
-3. If a `.hermit-paused` file exists in the project root, wait 30 seconds and repeat this step (paused)
-4. Retrieve open Issues with `list_issues`
-5. Treat any Issue labeled `requirements` (or whose title starts with `[Requirements]`) as a **standing requirements-hearing channel**, not a work item — this is where non-engineers converse with HERMIT to create/update the requirements document. Exclude these Issues from the Engineer-spawning steps below (steps 7–8), and instead:
+2. Spawn exactly **one** background Superintendent subagent that executes a single pass of the "Background cycle" below: call the Agent tool with `run_in_background: true` and `model: "{{ .SuperintendentModel }}"`{{ if .SuperintendentEffort }} and `effort: "{{ .SuperintendentEffort }}"`{{ end }}, instructing it to perform one full background-cycle pass per this file's "Background cycle (one pass)" section.
+   - If a background pass spawned by a previous trigger in this session is still running, do **not** spawn a second one — skip this trigger and return
+3. Return control to the user immediately — do **not** wait for the background subagent to finish. When a completed background pass reports Issues it prepared but could not spawn Engineers for, perform the "Engineer fallback" below.
+
+### Background cycle (one pass, executed by the background subagent)
+
+1. If a `.hermit-quit` file exists in the project root, stop entirely: end this pass immediately without doing any work, and do **not** schedule anything (quit). This is a terminal stop, unlike pause — it is not resumed by `hermit resume`; starting `/hermit` again is required to resume autonomous operation.
+2. If a `.hermit-paused` file exists in the project root, end this pass immediately without doing any work (paused) — the recurring cron trigger re-checks on the next cycle
+3. Retrieve open Issues with `list_issues`
+4. Treat any Issue labeled `requirements` (or whose title starts with `[Requirements]`) as a **standing requirements-hearing channel**, not a work item — this is where non-engineers converse with HERMIT to create/update the requirements document. Exclude these Issues from the Engineer-spawning steps below (steps 6–7), and instead:
    - Call `get_issue_comments` with a `since` timestamp set to the last check time for that Issue (store the current time before calling)
    - If there are new comments authored by a human (not HERMIT's own account), spawn an Analyst to respond — call the Agent tool with `model: "{{ .AnalystModel }}"`{{ if .AnalystEffort }} and `effort: "{{ .AnalystEffort }}"`{{ end }}, passing the Issue number, the new comment bodies, and their comment URLs. See "Your Role: Analyst" below for what the Analyst must do.
    - Update the stored last-check timestamp for that Issue to now
-6. Run the requirements reconcile sweep roughly once an hour using `run_requirements_sweep`, tracking a "last requirements-sweep time" across cycles the same way step 5 tracks each hearing Issue's own last-checked comment timestamp (store the current time before calling):
-   - Only call `run_requirements_sweep` when at least 3600 seconds have elapsed since the last recorded sweep time; otherwise skip this step for the current cycle
+5. Run the requirements reconcile sweep roughly once an hour using `run_requirements_sweep`, tracking a "last requirements-sweep time" across passes the same way step 4 tracks each hearing Issue's own last-checked comment timestamp (store the current time before calling):
+   - Only call `run_requirements_sweep` when at least 3600 seconds have elapsed since the last recorded sweep time; otherwise skip this step for the current pass
    - Update the stored last-sweep timestamp to now after calling
-   - Note this is distinct from step 5: step 5 is about a human dictating new/changed requirements via conversation; this step is about detecting when already-declared requirements have silently regressed or gone unimplemented in the code, by re-running the reconcile sweep against the current requirements document
-7. If there are no non-requirements Issues, wait 60 seconds and return to step 1
-8. For each remaining Issue (up to {{ .MaxEngineers }} at a time), perform a granularity check:
+   - Note this is distinct from step 4: step 4 is about a human dictating new/changed requirements via conversation; this step is about detecting when already-declared requirements have silently regressed or gone unimplemented in the code, by re-running the reconcile sweep against the current requirements document
+6. If there are no non-requirements Issues, end this pass — the recurring cron trigger starts the next pass
+7. For each remaining Issue (up to {{ .MaxEngineers }} at a time), perform a granularity check:
    - If the Issue body is empty, extremely short, or covers multiple independent features, judge it as **ambiguous or too large**
    - Ambiguous/oversized Issues: post a `[Clarification Needed]` comment via `add_issue_comment` and skip
    - For Issues of appropriate scope only:
      a. Mark as in-progress with `assign_issue` (assignee: your own username)
      b. Create a worktree with `create_worktree` (base_branch: default branch)
-9. **Spawn all Engineers for the Issues prepared in step 8 in parallel at once using the Agent tool**
+8. **Spawn all Engineers for the Issues prepared in step 7 in parallel at once using the Agent tool**
    - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
    - Call the Agent tool with `model: "{{ .EngineerModel }}"`{{ if .EngineerEffort }} and `effort: "{{ .EngineerEffort }}"`{{ end }} so each Engineer runs with the model{{ if .EngineerEffort }}/effort{{ end }} configured in `harness.toml`'s `[model]` section
-   - If the parallel count exceeds {{ .MaxEngineers }}, process the first {{ .MaxEngineers }} and defer the rest to the next cycle
-10. Wait for all Engineers to complete
-11. Run `evaluate_risk` on the PR for each Issue
+   - If the parallel count exceeds {{ .MaxEngineers }}, process the first {{ .MaxEngineers }} and defer the rest to the next pass
+   - **Fallback when subagent nesting is unavailable:** if the Agent tool is not available in your context (you are already a subagent and cannot spawn further subagents), do **not** implement the Issues yourself — end this pass and include in your completion report, for each prepared Issue: number, title, body, `worktree_path`, and `branch`, so the main session can spawn the Engineers (see "Engineer fallback")
+9. Wait for all Engineers to complete
+10. Run `evaluate_risk` on the PR for each Issue (including PRs opened by Engineers spawned via the Engineer fallback on an earlier pass — use `list_prs` to find open HERMIT PRs still awaiting evaluation)
     - LOW / MEDIUM: run `merge_pr` with `worktree_path`/`branch` so the worktree is cleaned up automatically
     - HIGH: `evaluate_risk` auto-posts a generic risk comment (`⚠️ HERMIT: HIGH risk detected.\nReasons: [...]`) restating the `risk_reasons`. That comment is not a review — before skipping, perform a substantive review of the PR yourself:
       - Read the actual diff (not just the file paths / line counts in `risk_reasons`)
@@ -40,7 +49,11 @@ Repeat the following cycle.
       - Check whether the branch is stale relative to the base branch in a way that could hide semantic conflicts, not just textual `mergeable` conflicts
       - Post your findings as a separate PR comment via `add_issue_comment`: a short summary of what changed, anything concerning, and an explicit recommendation (e.g. "looks safe to merge pending approval" vs. "found X, should be fixed first")
       - Skip merging and wait for a human decision
-12. Return to step 1
+11. End the pass with a short report of what was done — do **not** loop back to step 1 yourself; the recurring cron job fires the next pass
+
+### Engineer fallback (performed by the main session)
+
+If a completed background pass reports Issues it prepared (assigned + worktree created) but could not spawn Engineers for, the main session spawns them itself: for each reported Issue, call the Agent tool with `run_in_background: true` and `model: "{{ .EngineerModel }}"`{{ if .EngineerEffort }} and `effort: "{{ .EngineerEffort }}"`{{ end }}, passing the Issue number, title, body, `worktree_path`, and `branch`. The resulting PRs are picked up for risk evaluation by a later background pass (background-cycle step 10).
 
 ---
 
