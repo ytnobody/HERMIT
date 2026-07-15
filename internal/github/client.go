@@ -643,6 +643,27 @@ func (c *Client) AddLabelInRepo(number int, label, owner, repo string) error {
 	return err
 }
 
+// RemoveLabel removes a label from an issue in the client's primary repo.
+func (c *Client) RemoveLabel(number int, label string) error {
+	return c.RemoveLabelInRepo(number, label, "", "")
+}
+
+// RemoveLabelInRepo removes a label from an issue in a specific repo. Pass
+// empty strings to use the client's primary owner/repo. Removing a label an
+// issue does not have returns a 404 from GitHub's API; that is treated as
+// success so this is safe to call repeatedly (idempotent).
+func (c *Client) RemoveLabelInRepo(number int, label, owner, repo string) error {
+	owner, repo = c.resolveRepo(owner, repo)
+	resp, err := c.gh.Issues.RemoveLabelForIssue(context.Background(), owner, repo, number, label)
+	if err != nil {
+		if resp != nil && resp.StatusCode == 404 {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // GetIssueComments returns all comments on the given issue number.
 // since is an optional RFC3339 timestamp; when non-empty only comments
 // updated at or after that time are returned.

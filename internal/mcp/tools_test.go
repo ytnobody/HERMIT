@@ -73,6 +73,8 @@ type mockGithubClient struct {
 	postedComments []postedComment
 	addedLabels    []addedLabel
 	addLabelErr    error
+	removedLabels  []addedLabel
+	removeLabelErr error
 
 	// createdIssueTitles records the titles passed to CreateIssue (used by
 	// run_requirements_sweep tests to assert on issues opened by the
@@ -176,6 +178,14 @@ func (m *mockGithubClient) AddLabelInRepo(number int, label, owner, repo string)
 		return m.addLabelErr
 	}
 	m.addedLabels = append(m.addedLabels, addedLabel{number: number, label: label, owner: owner, repo: repo})
+	return nil
+}
+
+func (m *mockGithubClient) RemoveLabelInRepo(number int, label, owner, repo string) error {
+	if m.removeLabelErr != nil {
+		return m.removeLabelErr
+	}
+	m.removedLabels = append(m.removedLabels, addedLabel{number: number, label: label, owner: owner, repo: repo})
 	return nil
 }
 
@@ -1168,6 +1178,93 @@ func TestListIssues_readiness_insufficientAnswerStillRelabelled(t *testing.T) {
 		t.Fatalf("expected label re-applied when answers are insufficient, got %+v", mock.addedLabels)
 	}
 	// The hearing was already posted; it must not be reposted.
+	if len(mock.postedComments) != 0 {
+		t.Fatalf("expected no duplicate hearing comment, got %+v", mock.postedComments)
+	}
+}
+
+// TestREQ156_ListIssues_AnsweredIssueLabelAutoRemoved covers acceptance
+// criterion (1) of Issue #156: an Issue that still carries the
+// needs-clarification label from a HERMIT hearing, but has since received an
+// answer comment, must have the label removed automatically on the next
+// readiness check and re-enter the queue — without a human removing the
+// label by hand first (unlike the #149 scenario, where the label was already
+// gone).
+func TestREQ156_ListIssues_AnsweredIssueLabelAutoRemoved(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 2, Title: "too thin", Body: "fix it", Labels: []string{readiness.DefaultLabel}},
+	}
+	answer := `1. 目的: needs-clarificationラベルの自動解除
+2. スコープ: internal/readiness と internal/mcp
+3. 受け入れ条件: 回答コメント検出時にラベルが自動で外れること
+4. やらないこと: ヒアリング文面の変更`
+	mock := &mockGithubClient{issues: issues, issueCommentsByNumber: map[int][]gh.IssueComment{
+		2: {
+			{Author: "hermit", Body: readiness.HearingComment([]string{"Issue body is too thin"})},
+			{Author: "owner", Body: answer},
+		},
+	}}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got []gh.Issue
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 1 || got[0].Number != 2 {
+		t.Fatalf("expected answered issue #2 to re-enter the queue, got %+v", got)
+	}
+	if len(mock.removedLabels) != 1 || mock.removedLabels[0].number != 2 || mock.removedLabels[0].label != readiness.DefaultLabel {
+		t.Fatalf("expected needs-clarification label to be removed from issue #2, got %+v", mock.removedLabels)
+	}
+	if len(mock.addedLabels) != 0 {
+		t.Fatalf("expected needs-clarification NOT to be re-added after answers, got %+v", mock.addedLabels)
+	}
+}
+
+// TestREQ156_ListIssues_UnansweredIssueLabelKept covers acceptance criterion
+// (2) of Issue #156: an Issue carrying the needs-clarification label after a
+// HERMIT hearing, with no answer comment yet, must keep the label and stay
+// excluded from the queue.
+func TestREQ156_ListIssues_UnansweredIssueLabelKept(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 2, Title: "too thin", Body: "fix it", Labels: []string{readiness.DefaultLabel}},
+	}
+	mock := &mockGithubClient{issues: issues, issueCommentsByNumber: map[int][]gh.IssueComment{
+		2: {
+			{Author: "hermit", Body: readiness.HearingComment([]string{"Issue body is too thin"})},
+		},
+	}}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got []gh.Issue
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected unanswered issue #2 to stay excluded, got %+v", got)
+	}
+	if len(mock.removedLabels) != 0 {
+		t.Fatalf("expected needs-clarification label NOT to be removed without an answer, got %+v", mock.removedLabels)
+	}
+	// No new hearing comment either — one is already on record.
 	if len(mock.postedComments) != 0 {
 		t.Fatalf("expected no duplicate hearing comment, got %+v", mock.postedComments)
 	}
