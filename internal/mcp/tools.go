@@ -43,6 +43,7 @@ type githubClient interface {
 	GetIssueCommentsInRepo(issueNumber int, since, owner, repo string) ([]gh.IssueComment, error)
 	HasCommentMatching(number int, trigger string) (bool, error)
 	AddLabelInRepo(number int, label, owner, repo string) error
+	RemoveLabelInRepo(number int, label, owner, repo string) error
 	GetDefaultBranch() (string, error)
 	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
 	GetRecentPRComments(prNumber int, since string) ([]gh.PRComment, error)
@@ -104,23 +105,67 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 
-			// Issues already flagged as needing clarification, and standing
-			// requirements-hearing Issues (Issue #104 — addressed to a human,
-			// not an Engineer), are excluded from the queue up front (cheap
-			// check against the labels already returned by the list call — no
-			// extra API round-trip). They return to the queue once a human
-			// removes the respective label.
+			// Standing requirements-hearing Issues (Issue #104 — addressed
+			// to a human, not an Engineer) are excluded from the queue up
+			// front (cheap check against the labels already returned by the
+			// list call — no extra API round-trip). They return to the queue
+			// once a human removes the label.
 			var candidates []gh.Issue
 			for _, issue := range issues {
-				if readiness.HasLabel(issue.Labels, readinessCfg.Label) {
-					continue
-				}
 				if readiness.HasLabel(issue.Labels, requirements.HearingLabel) {
 					continue
 				}
 				candidates = append(candidates, issue)
 			}
 			issues = candidates
+
+			// Issues already flagged as needing clarification are excluded
+			// from the queue up front too, UNLESS HERMIT itself posted a
+			// hearing comment and the owner has since answered it in
+			// comments (Issue #149) — in that case the label is stale, so
+			// remove it here and let the Issue re-enter the queue instead of
+			// requiring a human to remove the label by hand (Issue #156).
+			// Issues that carry the label without a matching hearing/answer
+			// trail (e.g. a human applied it directly) are left untouched:
+			// they stay excluded until a human removes the label.
+			var afterClarification []gh.Issue
+			for _, issue := range issues {
+				if !readiness.HasLabel(issue.Labels, readinessCfg.Label) {
+					afterClarification = append(afterClarification, issue)
+					continue
+				}
+
+				comments, err := client.GetIssueCommentsInRepo(issue.Number, "", issue.Owner, issue.Repo)
+				if err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				commentBodies := make([]string, 0, len(comments))
+				for _, c := range comments {
+					commentBodies = append(commentBodies, c.Body)
+				}
+
+				if !readiness.HasHearingComment(commentBodies) {
+					// No HERMIT hearing on record for this label — leave it
+					// alone (matches pre-#156 behavior).
+					continue
+				}
+
+				result := readiness.EvaluateWithComments(issue.Body, commentBodies, readinessCfg)
+				if !result.Ready {
+					// Hearing posted but not yet answered (or answered
+					// insufficiently) — keep the Issue excluded.
+					continue
+				}
+
+				// Answers were posted in comments after the hearing — remove
+				// the now-stale label so the Issue re-enters the queue
+				// (Issue #156).
+				if err := client.RemoveLabelInRepo(issue.Number, readinessCfg.Label, issue.Owner, issue.Repo); err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				afterClarification = append(afterClarification, issue)
+			}
+			issues = afterClarification
 
 			if triggerComment != "" {
 				var filtered []gh.Issue
