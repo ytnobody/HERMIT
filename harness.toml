@@ -13,6 +13,13 @@ language      = "ja"
 superintendent = "claude-sonnet-5"
 engineer       = "claude-sonnet-5"
 
+[requirements]
+# doc = "REQUIREMENTS.md"  # default
+# Runs the REQ-ID-named tests (REQ-001 -> TestREQ001_*; hyphens stripped).
+# Must produce `go test -v` style output ("=== RUN" markers) so the sweep can
+# tell "no test exists" (unimplemented) apart from "test failed" (regressed).
+test_command = "go test ./... -run \"^Test$(printf '%s' '{req_id}' | tr -d '-')\" -v"
+
 # [readiness]
 # min_body_length                 = 40                    # minimum non-whitespace chars in the Issue body
 # skip_acceptance_criteria_check  = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
