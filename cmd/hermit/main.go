@@ -788,19 +788,23 @@ func cmdInit() {
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
 	writeTemplate("templates/CLAUDE.md.tmpl", "CLAUDE.md", struct {
-		MaxEngineers       int
-		ProjectCodingRules string
-		EngineerModel      string
-		EngineerEffort     string
-		AnalystModel       string
-		AnalystEffort      string
+		MaxEngineers         int
+		ProjectCodingRules   string
+		SuperintendentModel  string
+		SuperintendentEffort string
+		EngineerModel        string
+		EngineerEffort       string
+		AnalystModel         string
+		AnalystEffort        string
 	}{
-		MaxEngineers:       maxEng,
-		ProjectCodingRules: "Describe your project-specific coding guidelines here.",
-		EngineerModel:      preset.Engineer,
-		EngineerEffort:     engEffort,
-		AnalystModel:       preset.Analyst,
-		AnalystEffort:      analystEffort,
+		MaxEngineers:         maxEng,
+		ProjectCodingRules:   "Describe your project-specific coding guidelines here.",
+		SuperintendentModel:  preset.Superintendent,
+		SuperintendentEffort: supEffort,
+		EngineerModel:        preset.Engineer,
+		EngineerEffort:       engEffort,
+		AnalystModel:         preset.Analyst,
+		AnalystEffort:        analystEffort,
 	})
 
 	// Generate .github/ISSUE_TEMPLATE/hermit-task.md for Issue creation guidance.
