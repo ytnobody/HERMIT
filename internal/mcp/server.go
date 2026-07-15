@@ -39,9 +39,13 @@ type RequirementsConfig struct {
 // risk policy applied when a tool call does not target a repo with its own
 // override; repoRiskConfigs maps "owner/repo" to a per-repo override (used
 // in multi-repo mode). Pass risk.DefaultConfig() and a nil map to use the
-// built-in hardcoded policy.
-func Serve(client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig) error {
+// built-in hardcoded policy. maxEngineers is the resolved (default-applied)
+// [agent].max_engineers value from harness.toml (REQ-011): the maximum
+// number of Engineers the Superintendent spawns in parallel per pass. It is
+// surfaced read-only via get_config so the Superintendent can reference the
+// configured value instead of a hardcoded number.
+func Serve(client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig, maxEngineers int) error {
 	s := server.NewMCPServer("hermit", "1.0.0")
-	registerTools(s, client, rateLimitThreshold, rootDir, branchPrefix, loopInterval, webhookURL, webhookType, repos, triggerComment, readinessCfg, defaultRiskConfig, repoRiskConfigs, model, requirementsCfg)
+	registerTools(s, client, rateLimitThreshold, rootDir, branchPrefix, loopInterval, webhookURL, webhookType, repos, triggerComment, readinessCfg, defaultRiskConfig, repoRiskConfigs, model, requirementsCfg, maxEngineers)
 	return server.ServeStdio(s)
 }

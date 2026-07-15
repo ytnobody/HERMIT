@@ -104,6 +104,36 @@ func TestREQ004_AssignIssue_ReturnsSuccess(t *testing.T) {
 	}
 }
 
+// TestREQ011_GetConfig_ReturnsMaxEngineers verifies REQ-011: get_config
+// reports the [agent].max_engineers value from harness.toml so the
+// Superintendent can look up the configured parallel-Engineer cap via MCP
+// instead of relying on a hardcoded number (the CLAUDE.md template already
+// references {{ .MaxEngineers }} at render time; this covers the runtime
+// half of the acceptance criteria).
+func TestREQ011_GetConfig_ReturnsMaxEngineers(t *testing.T) {
+	s := newTestServerWithMaxEngineers(t, &mockGithubClient{}, 7)
+
+	result := callTool(t, s, "get_config", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	maxEngineers, ok := got["max_engineers"].(float64)
+	if !ok {
+		t.Fatalf("expected max_engineers in get_config response, got %v", got)
+	}
+	if maxEngineers != 7 {
+		t.Errorf("max_engineers = %v, want 7", maxEngineers)
+	}
+}
+
 // TestREQ007_MergePR_CIGatingAndHighRiskRejection verifies REQ-007: merge_pr
 // refuses to merge while CI is failing, and refuses HIGH risk PRs with a
 // comment posted on the PR, returning merged=false with a reason in both

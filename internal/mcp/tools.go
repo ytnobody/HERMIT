@@ -68,7 +68,7 @@ func resolveRiskConfig(owner, repo string, defaultRiskConfig risk.Config, repoRi
 	return defaultRiskConfig
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig) {
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig, maxEngineers int) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -471,11 +471,12 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("get_config",
-			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval, the risk-evaluation policy, and the model/reasoning-effort configured for each role (superintendent, engineer, analyst)."),
+			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval, max_engineers (the [agent].max_engineers parallel-Engineer cap from harness.toml), the risk-evaluation policy, and the model/reasoning-effort configured for each role (superintendent, engineer, analyst)."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			resp := map[string]any{
 				"loop_interval": loopInterval,
+				"max_engineers": maxEngineers,
 				"risk":          defaultRiskConfig,
 				"model": map[string]any{
 					"superintendent":        model.Superintendent,
