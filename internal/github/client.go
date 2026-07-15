@@ -647,6 +647,13 @@ func (c *Client) AddLabelInRepo(number int, label, owner, repo string) error {
 // since is an optional RFC3339 timestamp; when non-empty only comments
 // updated at or after that time are returned.
 func (c *Client) GetIssueComments(number int, since string) ([]IssueComment, error) {
+	return c.GetIssueCommentsInRepo(number, since, "", "")
+}
+
+// GetIssueCommentsInRepo is the repo-aware variant of GetIssueComments.
+// Pass empty strings to use the client's primary owner/repo.
+func (c *Client) GetIssueCommentsInRepo(number int, since, owner, repo string) ([]IssueComment, error) {
+	owner, repo = c.resolveRepo(owner, repo)
 	opts := &gogithub.IssueListCommentsOptions{}
 	if since != "" {
 		t, err := time.Parse(time.RFC3339, since)
@@ -655,7 +662,7 @@ func (c *Client) GetIssueComments(number int, since string) ([]IssueComment, err
 		}
 		opts.Since = &t
 	}
-	comments, _, err := c.gh.Issues.ListComments(context.Background(), c.owner, c.repo, number, opts)
+	comments, _, err := c.gh.Issues.ListComments(context.Background(), owner, repo, number, opts)
 	if err != nil {
 		return nil, err
 	}

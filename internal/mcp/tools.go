@@ -40,8 +40,8 @@ type githubClient interface {
 	CountPRsForIssue(issueNum int) (int, error)
 	ReviewPR(num int) (string, error)
 	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
+	GetIssueCommentsInRepo(issueNumber int, since, owner, repo string) ([]gh.IssueComment, error)
 	HasCommentMatching(number int, trigger string) (bool, error)
-	HasCommentMatchingInRepo(number int, trigger, owner, repo string) (bool, error)
 	AddLabelInRepo(number int, label, owner, repo string) error
 	GetDefaultBranch() (string, error)
 	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
@@ -149,11 +149,28 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 					continue
 				}
 
-				alreadyAsked, err := client.HasCommentMatchingInRepo(issue.Number, readiness.HearingMarker, issue.Owner, issue.Repo)
+				// The body alone is not ready. The hearing comment asks the
+				// owner to answer in comments, so answers may live there
+				// rather than in the body (Issue #149): re-evaluate with any
+				// comments posted after the hearing comment before deciding
+				// to (re-)label. Without this, an Issue whose hearing was
+				// answered in comments and whose label was manually removed
+				// would be re-labelled forever and never re-enter the queue.
+				comments, err := client.GetIssueCommentsInRepo(issue.Number, "", issue.Owner, issue.Repo)
 				if err != nil {
 					return mcp.NewToolResultError(err.Error()), nil
 				}
-				if !alreadyAsked {
+				commentBodies := make([]string, 0, len(comments))
+				for _, c := range comments {
+					commentBodies = append(commentBodies, c.Body)
+				}
+				result = readiness.EvaluateWithComments(issue.Body, commentBodies, readinessCfg)
+				if result.Ready {
+					ready = append(ready, issue)
+					continue
+				}
+
+				if !readiness.HasHearingComment(commentBodies) {
 					comment := readiness.HearingComment(result.Reasons)
 					if err := client.PostCommentInRepo(issue.Number, comment, issue.Owner, issue.Repo); err != nil {
 						return mcp.NewToolResultError(err.Error()), nil

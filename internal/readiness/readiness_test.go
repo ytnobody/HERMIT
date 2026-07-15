@@ -89,6 +89,98 @@ func TestEvaluate_configurableThreshold(t *testing.T) {
 	}
 }
 
+func TestEvaluateWithComments(t *testing.T) {
+	cfg := DefaultConfig()
+	thinBody := "fix it"
+	hearing := HearingComment([]string{"Issue body is too thin"})
+	answer := `1. 目的: バグを直す
+2. スコープ: internal/readiness のみ
+3. 受け入れ条件: ラベル手動除去後に needs-clarification が再付与されないこと
+4. やらないこと: readiness基準そのものの変更`
+
+	tests := []struct {
+		name      string
+		body      string
+		comments  []string
+		wantReady bool
+	}{
+		{
+			name:      "answers after hearing comment make the issue ready (Issue #149)",
+			body:      thinBody,
+			comments:  []string{hearing, answer},
+			wantReady: true,
+		},
+		{
+			name:      "hearing with no follow-up comments stays not ready",
+			body:      thinBody,
+			comments:  []string{hearing},
+			wantReady: false,
+		},
+		{
+			name:      "insufficient follow-up comment stays not ready",
+			body:      thinBody,
+			comments:  []string{hearing, "後で書きます"},
+			wantReady: false,
+		},
+		{
+			name:      "comments before any hearing are ignored",
+			body:      thinBody,
+			comments:  []string{answer},
+			wantReady: false,
+		},
+		{
+			name:      "only comments after the last hearing count",
+			body:      thinBody,
+			comments:  []string{hearing, answer, hearing},
+			wantReady: false,
+		},
+		{
+			name:      "reposted hearing comment is never counted as an answer",
+			body:      thinBody,
+			comments:  []string{hearing, hearing},
+			wantReady: false,
+		},
+		{
+			name: "ready body stays ready regardless of comments",
+			body: `## 背景
+このIssueは十分に長い説明を持ち、実装に着手できる情報が揃っています。
+
+## 受け入れ条件
+- 条件1を満たすこと`,
+			comments:  nil,
+			wantReady: true,
+		},
+		{
+			name:      "no comments behaves like Evaluate",
+			body:      thinBody,
+			comments:  nil,
+			wantReady: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateWithComments(tt.body, tt.comments, cfg)
+			if got.Ready != tt.wantReady {
+				t.Fatalf("EvaluateWithComments() ready = %v, want %v (reasons: %v)", got.Ready, tt.wantReady, got.Reasons)
+			}
+		})
+	}
+}
+
+func TestHasHearingComment(t *testing.T) {
+	hearing := HearingComment(nil)
+	if !HasHearingComment([]string{"unrelated", hearing}) {
+		t.Fatalf("expected hearing comment to be detected")
+	}
+	if HasHearingComment([]string{"unrelated", "also unrelated"}) {
+		t.Fatalf("expected no hearing comment detected")
+	}
+	if HasHearingComment(nil) {
+		t.Fatalf("expected no hearing comment detected for empty comments")
+	}
+}
+
 func TestHasLabel(t *testing.T) {
 	labels := []string{"bug", "Needs-Clarification"}
 	if !HasLabel(labels, "needs-clarification") {
