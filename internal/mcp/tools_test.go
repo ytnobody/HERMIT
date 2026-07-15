@@ -63,11 +63,12 @@ type mockGithubClient struct {
 	prCountForIssueErr  error
 	ciDetails           *gh.CIDetails
 
-	// hearingMatchResult, keyed by issue number, controls the result of
-	// HasCommentMatchingInRepo (used to check whether a readiness hearing
-	// comment was already posted on a given issue).
-	hearingMatchResult map[int]bool
-	hearingMatchErr    error
+	// issueCommentsByNumber, keyed by issue number, controls the result of
+	// GetIssueCommentsInRepo (used by the readiness check to detect an
+	// already-posted hearing comment and to evaluate answers posted in
+	// comments after it — Issue #149).
+	issueCommentsByNumber map[int][]gh.IssueComment
+	issueCommentsErr      error
 
 	postedComments []postedComment
 	addedLabels    []addedLabel
@@ -163,11 +164,11 @@ func (m *mockGithubClient) HasCommentMatching(number int, _ string) (bool, error
 	return m.commentMatchResult, m.commentMatchErr
 }
 
-func (m *mockGithubClient) HasCommentMatchingInRepo(number int, _ string, _, _ string) (bool, error) {
-	if m.hearingMatchErr != nil {
-		return false, m.hearingMatchErr
+func (m *mockGithubClient) GetIssueCommentsInRepo(number int, _ string, _, _ string) ([]gh.IssueComment, error) {
+	if m.issueCommentsErr != nil {
+		return nil, m.issueCommentsErr
 	}
-	return m.hearingMatchResult[number], nil
+	return m.issueCommentsByNumber[number], nil
 }
 
 func (m *mockGithubClient) AddLabelInRepo(number int, label, owner, repo string) error {
@@ -206,7 +207,7 @@ func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string)
 func newTestServerWithReadiness(t *testing.T, client githubClient, trigger string, readinessCfg readiness.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4)
 	return s
 }
 
@@ -216,14 +217,24 @@ func newTestServerWithReadiness(t *testing.T, client githubClient, trigger strin
 func newTestServerWithRisk(t *testing.T, client githubClient, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{}, RequirementsConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{}, RequirementsConfig{}, 4)
 	return s
 }
 
 func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model, RequirementsConfig{})
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model, RequirementsConfig{}, 4)
+	return s
+}
+
+// newTestServerWithMaxEngineers is like newTestServer but allows tests to
+// supply a custom max_engineers value (REQ-011), exercising the value
+// surfaced read-only by get_config.
+func newTestServerWithMaxEngineers(t *testing.T, client githubClient, maxEngineers int) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, maxEngineers)
 	return s
 }
 
@@ -233,7 +244,7 @@ func newTestServerWithRoot(t *testing.T, client githubClient) (*server.MCPServer
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{})
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4)
 	return s, root
 }
 
@@ -244,7 +255,7 @@ func newTestServerWithRequirements(t *testing.T, client githubClient, requiremen
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, requirementsCfg)
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, requirementsCfg, 4)
 	return s, root
 }
 
@@ -1029,7 +1040,7 @@ func TestListIssues_readiness_unreadyIssueGetsHearingCommentAndLabel(t *testing.
 		{Number: 1, Title: "well specified", Body: wellSpecifiedBody},
 		{Number: 2, Title: "too thin", Body: "fix it"},
 	}
-	mock := &mockGithubClient{issues: issues, hearingMatchResult: map[int]bool{}}
+	mock := &mockGithubClient{issues: issues}
 	s := newTestServer(t, mock)
 
 	result := callTool(t, s, "list_issues", map[string]any{})
@@ -1066,7 +1077,9 @@ func TestListIssues_readiness_idempotent_noDuplicateHearingComment(t *testing.T)
 		{Number: 2, Title: "too thin", Body: "fix it"},
 	}
 	// Hearing comment was already posted on issue #2 in a previous cycle.
-	mock := &mockGithubClient{issues: issues, hearingMatchResult: map[int]bool{2: true}}
+	mock := &mockGithubClient{issues: issues, issueCommentsByNumber: map[int][]gh.IssueComment{
+		2: {{Author: "hermit", Body: readiness.HearingComment([]string{"Issue body is too thin"})}},
+	}}
 	s := newTestServer(t, mock)
 
 	result := callTool(t, s, "list_issues", map[string]any{})
@@ -1082,6 +1095,81 @@ func TestListIssues_readiness_idempotent_noDuplicateHearingComment(t *testing.T)
 	// somehow removed without a human response.
 	if len(mock.addedLabels) != 1 || mock.addedLabels[0].number != 2 {
 		t.Fatalf("expected label re-applied to issue #2, got %+v", mock.addedLabels)
+	}
+}
+
+// TestListIssues_readiness_answeredHearingNotRelabelled reproduces Issue #149:
+// the hearing questions were answered in comments and a human manually
+// removed the needs-clarification label. The readiness check must treat the
+// Issue as ready (answers count) instead of re-adding the label forever.
+func TestListIssues_readiness_answeredHearingNotRelabelled(t *testing.T) {
+	issues := []gh.Issue{
+		// Thin body, but no needs-clarification label: it was manually
+		// removed after the hearing was answered in comments.
+		{Number: 2, Title: "too thin", Body: "fix it"},
+	}
+	answer := `1. 目的: readinessチェックの再ラベル付与ループを止める
+2. スコープ: internal/readiness と internal/mcp
+3. 受け入れ条件: ラベルを手動で外した後に needs-clarification が再付与されないこと
+4. やらないこと: readiness基準そのものの変更`
+	mock := &mockGithubClient{issues: issues, issueCommentsByNumber: map[int][]gh.IssueComment{
+		2: {
+			{Author: "hermit", Body: readiness.HearingComment([]string{"Issue body is too thin"})},
+			{Author: "owner", Body: answer},
+		},
+	}}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got []gh.Issue
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(got) != 1 || got[0].Number != 2 {
+		t.Fatalf("expected answered issue #2 to re-enter the queue, got %+v", got)
+	}
+	if len(mock.addedLabels) != 0 {
+		t.Fatalf("expected needs-clarification NOT to be re-added after answers, got %+v", mock.addedLabels)
+	}
+	if len(mock.postedComments) != 0 {
+		t.Fatalf("expected no new hearing comment on answered issue, got %+v", mock.postedComments)
+	}
+}
+
+// TestListIssues_readiness_insufficientAnswerStillRelabelled guards the
+// regression side of Issue #149: a comment after the hearing that does not
+// actually answer the questions must not unlock the Issue.
+func TestListIssues_readiness_insufficientAnswerStillRelabelled(t *testing.T) {
+	issues := []gh.Issue{
+		{Number: 2, Title: "too thin", Body: "fix it"},
+	}
+	mock := &mockGithubClient{issues: issues, issueCommentsByNumber: map[int][]gh.IssueComment{
+		2: {
+			{Author: "hermit", Body: readiness.HearingComment([]string{"Issue body is too thin"})},
+			{Author: "owner", Body: "後で書きます"},
+		},
+	}}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "list_issues", map[string]any{})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	if len(mock.addedLabels) != 1 || mock.addedLabels[0].number != 2 {
+		t.Fatalf("expected label re-applied when answers are insufficient, got %+v", mock.addedLabels)
+	}
+	// The hearing was already posted; it must not be reposted.
+	if len(mock.postedComments) != 0 {
+		t.Fatalf("expected no duplicate hearing comment, got %+v", mock.postedComments)
 	}
 }
 
@@ -1147,7 +1235,7 @@ func TestListIssues_readiness_configurableThreshold(t *testing.T) {
 	}
 
 	t.Run("lenient threshold allows short body", func(t *testing.T) {
-		mock := &mockGithubClient{issues: issues, hearingMatchResult: map[int]bool{}}
+		mock := &mockGithubClient{issues: issues}
 		lenient := readiness.Config{MinBodyLength: 5, RequireAcceptanceCriteria: false, Label: readiness.DefaultLabel}
 		s := newTestServerWithReadiness(t, mock, "", lenient)
 
@@ -1169,7 +1257,7 @@ func TestListIssues_readiness_configurableThreshold(t *testing.T) {
 	})
 
 	t.Run("strict threshold rejects the same body", func(t *testing.T) {
-		mock := &mockGithubClient{issues: issues, hearingMatchResult: map[int]bool{}}
+		mock := &mockGithubClient{issues: issues}
 		strict := readiness.Config{MinBodyLength: 1000, RequireAcceptanceCriteria: false, Label: readiness.DefaultLabel}
 		s := newTestServerWithReadiness(t, mock, "", strict)
 

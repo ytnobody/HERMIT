@@ -40,8 +40,8 @@ type githubClient interface {
 	CountPRsForIssue(issueNum int) (int, error)
 	ReviewPR(num int) (string, error)
 	GetIssueComments(issueNumber int, since string) ([]gh.IssueComment, error)
+	GetIssueCommentsInRepo(issueNumber int, since, owner, repo string) ([]gh.IssueComment, error)
 	HasCommentMatching(number int, trigger string) (bool, error)
-	HasCommentMatchingInRepo(number int, trigger, owner, repo string) (bool, error)
 	AddLabelInRepo(number int, label, owner, repo string) error
 	GetDefaultBranch() (string, error)
 	GetCIDetailsInRepo(num int, owner, repo string) (*gh.CIDetails, error)
@@ -68,7 +68,7 @@ func resolveRiskConfig(owner, repo string, defaultRiskConfig risk.Config, repoRi
 	return defaultRiskConfig
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig) {
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig, maxEngineers int) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -149,11 +149,28 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 					continue
 				}
 
-				alreadyAsked, err := client.HasCommentMatchingInRepo(issue.Number, readiness.HearingMarker, issue.Owner, issue.Repo)
+				// The body alone is not ready. The hearing comment asks the
+				// owner to answer in comments, so answers may live there
+				// rather than in the body (Issue #149): re-evaluate with any
+				// comments posted after the hearing comment before deciding
+				// to (re-)label. Without this, an Issue whose hearing was
+				// answered in comments and whose label was manually removed
+				// would be re-labelled forever and never re-enter the queue.
+				comments, err := client.GetIssueCommentsInRepo(issue.Number, "", issue.Owner, issue.Repo)
 				if err != nil {
 					return mcp.NewToolResultError(err.Error()), nil
 				}
-				if !alreadyAsked {
+				commentBodies := make([]string, 0, len(comments))
+				for _, c := range comments {
+					commentBodies = append(commentBodies, c.Body)
+				}
+				result = readiness.EvaluateWithComments(issue.Body, commentBodies, readinessCfg)
+				if result.Ready {
+					ready = append(ready, issue)
+					continue
+				}
+
+				if !readiness.HasHearingComment(commentBodies) {
 					comment := readiness.HearingComment(result.Reasons)
 					if err := client.PostCommentInRepo(issue.Number, comment, issue.Owner, issue.Repo); err != nil {
 						return mcp.NewToolResultError(err.Error()), nil
@@ -454,11 +471,12 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("get_config",
-			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval, the risk-evaluation policy, and the model/reasoning-effort configured for each role (superintendent, engineer, analyst)."),
+			mcp.WithDescription("Returns the current HERMIT configuration values. Use this to read settings such as loop_interval, max_engineers (the [agent].max_engineers parallel-Engineer cap from harness.toml), the risk-evaluation policy, and the model/reasoning-effort configured for each role (superintendent, engineer, analyst)."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			resp := map[string]any{
 				"loop_interval": loopInterval,
+				"max_engineers": maxEngineers,
 				"risk":          defaultRiskConfig,
 				"model": map[string]any{
 					"superintendent":        model.Superintendent,

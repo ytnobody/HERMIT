@@ -90,6 +90,70 @@ func Evaluate(body string, cfg Config) Result {
 	}
 }
 
+// EvaluateWithComments extends Evaluate to also consider answers posted as
+// Issue comments after a hearing comment (Issue #149).
+//
+// Rationale: the hearing comment explicitly asks the owner to answer in
+// comments, but Evaluate only ever looks at the Issue body. When the owner
+// answers in comments and manually removes the needs-clarification label,
+// a body-only re-evaluation re-adds the label forever, keeping the answered
+// Issue out of the queue.
+//
+// commentBodies must be the Issue's comment bodies in chronological order
+// (the order the GitHub API returns them in). Comments posted after the
+// last hearing comment are treated as answers and evaluated together with
+// the Issue body against the exact same criteria as Evaluate — the
+// readiness criteria themselves are unchanged, only the text they are
+// applied to grows. Comments that themselves carry the hearing marker
+// (reposted hearings) are never counted as answers. When no hearing comment
+// exists, or no comments follow it, the result is identical to
+// Evaluate(body, cfg).
+func EvaluateWithComments(body string, commentBodies []string, cfg Config) Result {
+	result := Evaluate(body, cfg)
+	if result.Ready {
+		return result
+	}
+
+	// Find the last hearing comment; only comments after it count as answers.
+	hearingIdx := -1
+	for i, c := range commentBodies {
+		if strings.Contains(c, HearingMarker) {
+			hearingIdx = i
+		}
+	}
+	if hearingIdx < 0 {
+		return result
+	}
+
+	var sb strings.Builder
+	sb.WriteString(body)
+	answered := false
+	for _, c := range commentBodies[hearingIdx+1:] {
+		if strings.Contains(c, HearingMarker) {
+			continue
+		}
+		sb.WriteString("\n\n")
+		sb.WriteString(c)
+		answered = true
+	}
+	if !answered {
+		return result
+	}
+	return Evaluate(sb.String(), cfg)
+}
+
+// HasHearingComment reports whether any of the given comment bodies contains
+// the hearing marker, i.e. whether a hearing comment was already posted on
+// the Issue.
+func HasHearingComment(commentBodies []string) bool {
+	for _, c := range commentBodies {
+		if strings.Contains(c, HearingMarker) {
+			return true
+		}
+	}
+	return false
+}
+
 // HasLabel reports whether labels contains the given label name
 // (case-insensitive).
 func HasLabel(labels []string, label string) bool {

@@ -504,7 +504,7 @@ func cmdServe() {
 		AnalystEffort:        resolveAnalystEffort(cfg),
 	}
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model, requirementsCfg); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model, requirementsCfg, cfg.Agent.MaxEngineers); err != nil {
 		fatal(err.Error())
 	}
 }
@@ -788,19 +788,23 @@ func cmdInit() {
 
 	writeTemplate("templates/harness.toml.tmpl", "harness.toml", data)
 	writeTemplate("templates/CLAUDE.md.tmpl", "CLAUDE.md", struct {
-		MaxEngineers       int
-		ProjectCodingRules string
-		EngineerModel      string
-		EngineerEffort     string
-		AnalystModel       string
-		AnalystEffort      string
+		MaxEngineers         int
+		ProjectCodingRules   string
+		SuperintendentModel  string
+		SuperintendentEffort string
+		EngineerModel        string
+		EngineerEffort       string
+		AnalystModel         string
+		AnalystEffort        string
 	}{
-		MaxEngineers:       maxEng,
-		ProjectCodingRules: "Describe your project-specific coding guidelines here.",
-		EngineerModel:      preset.Engineer,
-		EngineerEffort:     engEffort,
-		AnalystModel:       preset.Analyst,
-		AnalystEffort:      analystEffort,
+		MaxEngineers:         maxEng,
+		ProjectCodingRules:   "Describe your project-specific coding guidelines here.",
+		SuperintendentModel:  preset.Superintendent,
+		SuperintendentEffort: supEffort,
+		EngineerModel:        preset.Engineer,
+		EngineerEffort:       engEffort,
+		AnalystModel:         preset.Analyst,
+		AnalystEffort:        analystEffort,
 	})
 
 	// Generate .github/ISSUE_TEMPLATE/hermit-task.md for Issue creation guidance.
@@ -881,8 +885,17 @@ func loadConfig() Config {
 	if cfg.Readiness.Label == "" {
 		cfg.Readiness.Label = readiness.DefaultLabel
 	}
+	if cfg.Agent.MaxEngineers <= 0 {
+		cfg.Agent.MaxEngineers = defaultMaxEngineers
+	}
 	return cfg
 }
+
+// defaultMaxEngineers is the fallback [agent].max_engineers value (REQ-011)
+// applied when harness.toml omits it or sets it to a non-positive number,
+// matching the "hermit init" prompt's default (see promptDefault call for
+// "Max parallel Engineers").
+const defaultMaxEngineers = 4
 
 func prompt(sc *bufio.Scanner, msg string) string {
 	fmt.Print(msg)

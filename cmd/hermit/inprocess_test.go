@@ -617,6 +617,84 @@ func TestCmdInit_ClaudeMdWiresEngineerModelAndEffort(t *testing.T) {
 	}
 }
 
+// TestCmdInit_ClaudeMdDispatchesBackgroundSuperintendent verifies that the
+// generated CLAUDE.md instructs the foreground /hermit invocation to delegate
+// the Superintendent cycle to a background subagent (Agent tool with
+// run_in_background: true) wired to the configured Superintendent
+// model/effort, instead of running the cycle inline (issue #147).
+func TestCmdInit_ClaudeMdDispatchesBackgroundSuperintendent(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	r, w, _ := os.Pipe()
+	origStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = origStdin }()
+
+	go func() {
+		sc := bufio.NewWriter(w)
+		fmt.Fprintln(sc, "test-owner")
+		fmt.Fprintln(sc, "test-repo")
+		fmt.Fprintln(sc, "en")
+		fmt.Fprintln(sc, "2")
+		fmt.Fprintln(sc, "claude-cheap")
+		fmt.Fprintln(sc, "high")   // superintendent effort
+		fmt.Fprintln(sc, "medium") // engineer effort
+		fmt.Fprintln(sc, "low")    // analyst effort
+		sc.Flush()
+		w.Close()
+	}()
+
+	pr2, pw2, _ := os.Pipe()
+	origOut := os.Stdout
+	os.Stdout = pw2
+	cmdInit()
+	pw2.Close()
+	os.Stdout = origOut
+	var buf bytes.Buffer
+	buf.ReadFrom(pr2)
+
+	claudeMd, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("CLAUDE.md not created: %v", err)
+	}
+	content := string(claudeMd)
+	if !strings.Contains(content, "### Foreground dispatch") {
+		t.Errorf("CLAUDE.md missing foreground dispatch section:\n%s", content)
+	}
+	if !strings.Contains(content, "### Background cycle") {
+		t.Errorf("CLAUDE.md missing background cycle section:\n%s", content)
+	}
+	// Superintendent model/effort wiring on the background dispatch step
+	// (claude-cheap preset superintendent model, effort answered as "high").
+	want := "`run_in_background: true` and `model: \"claude-sonnet-5\"` and `effort: \"high\"`"
+	if !strings.Contains(content, want) {
+		t.Errorf("CLAUDE.md dispatch step missing superintendent model/effort wiring (want %s):\n%s", want, content)
+	}
+	if !strings.Contains(content, "### Engineer fallback") {
+		t.Errorf("CLAUDE.md missing Engineer fallback section:\n%s", content)
+	}
+}
+
+// TestEmbeddedHermitCommandDispatchesBackground verifies that the embedded
+// /hermit slash-command template tells the model to run only the foreground
+// dispatch and delegate the cycle to a background subagent (issue #147).
+func TestEmbeddedHermitCommandDispatchesBackground(t *testing.T) {
+	data, err := templateFS.ReadFile("templates/commands/hermit.md")
+	if err != nil {
+		t.Fatalf("embedded templates/commands/hermit.md not readable: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "run_in_background: true") {
+		t.Errorf("hermit.md command missing run_in_background dispatch instruction:\n%s", content)
+	}
+	if !strings.Contains(content, "Foreground dispatch") {
+		t.Errorf("hermit.md command missing reference to the foreground dispatch steps:\n%s", content)
+	}
+}
+
 // TestCmdInit_ClaudeMdOmitsEffortClauseWhenUnset verifies that leaving the
 // effort prompts empty produces a model-only Agent tool wiring instruction
 // (no dangling `effort: ""` clause). Uses the "claude-cheap" preset, since

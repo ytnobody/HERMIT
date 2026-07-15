@@ -19,33 +19,46 @@ Either way, once the question is recorded on GitHub, stop working on that item a
 
 Follow the Human Input Policy above for any judgment call in this cycle; never fall back to an interactive chat prompt.
 
-Repeat the following cycle.
+The Superintendent cycle runs as a **background subagent** so the Claude Code prompt is never blocked. Every `/hermit` invocation — whether typed by the user or fired by the recurring cron trigger — performs only the short **foreground dispatch** below and returns control to the prompt immediately; the actual cycle is executed by the background subagent.
 
-1. Ensure the cycle keeps running on its own, without depending on the model remembering to do so: call `CronList` to check whether a recurring job invoking `/hermit` (or this cycle) is already scheduled.
+### Foreground dispatch (run inline, then return to the prompt)
+
+1. Ensure the cycle keeps triggering on its own, without depending on the model remembering to do so: call `CronList` to check whether a recurring job invoking `/hermit` (or this cycle) is already scheduled.
    - If no such job is registered, call `CronCreate` to schedule one at the configured interval (e.g. `*/2 * * * *` for the default 120-second cadence; round to the nearest whole minute the cron expression can express)
    - If a matching job is already registered, do nothing
-2. If a `.hermit-quit` file exists in the project root, stop the loop entirely: do **not** call `ScheduleWakeup` again, and end the Superintendent session (quit). This is a terminal stop, unlike pause — it is not resumed by `hermit resume`; starting `/hermit` again is required to resume autonomous operation.
-3. If a `.hermit-paused` file exists in the project root, wait 30 seconds and repeat this step (paused)
-4. Retrieve open Issues with `list_issues`
-5. Check open PRs for new review comments using `get_recent_pr_comments` with a `since` timestamp set to the last check time (store the current time before calling):
+2. Spawn exactly **one** background Superintendent subagent that executes a single pass of the "Background cycle" below: call the Agent tool with `run_in_background: true` (use the model configured as `[model].superintendent` in `harness.toml`, if set), instructing it to perform one full background-cycle pass per this file's "Background cycle (one pass)" section. The prompt handed to this subagent **must include, verbatim or in substance, the prohibition stated at the top of "Background cycle" below**: it must not edit, `Write`, or otherwise implement any change to this repository's tracked files — including inside worktrees created in step 8 — under any circumstance, including when the Agent tool for spawning Engineers turns out to be unavailable. Omitting this reminder from the dispatch prompt is itself a bug in the dispatch, not just in the subagent's behavior.
+   - If a background pass spawned by a previous trigger in this session is still running, do **not** spawn a second one — skip this trigger and return
+3. Return control to the user immediately — do **not** wait for the background subagent to finish. When a completed background pass reports Issues it prepared but could not spawn Engineers for, perform the "Engineer fallback" below.
+
+**Tool scoping (required):** the prompt-level prohibition above is necessary but was observed to be insufficient on its own — dispatch the background Superintendent pass with `subagent_type: superintendent`, defined in `.claude/agents/superintendent.md`. That agent type has no `Edit`, no `Bash`, and no `Agent` in its tool list (only Read/Glob/Grep, a state-file-scoped `Write`, and the hermit MCP tools), so it structurally cannot implement Issues, commit, or open PRs; Issue implementation always flows through the Engineer fallback. Fall back to a general-purpose subagent only if the `superintendent` agent type is unavailable, in which case the prompt-level prohibition is the only guard.
+
+### Background cycle (one pass, executed by the background subagent)
+
+**Hard prohibition — read before doing anything else in this pass:** this pass is a coordinator, not an implementer. It must never use `Edit`, `Write`, `NotebookEdit`, or shell commands that mutate tracked files (including inside a worktree created in step 8) to change this repository's code, docs, or config. All implementation work — even a one-line fix, even when it looks faster to do it yourself, even when the Agent tool for spawning Engineers is unavailable — belongs exclusively to the Engineer role. This is not merely a preference: if this pass finds itself about to open a file for editing anywhere under a `worktree_path`, or to run a code-writing command against one, that is a signal the pass has drifted out of role and must stop and fall back to reporting instead (see step 9's fallback). This prohibition holds even though a general-purpose subagent has the technical ability to call `Edit`/`Write`/`Bash` — having the tool available is not permission to use it for implementation in this role.
+
+1. If a `.hermit-quit` file exists in the project root, stop entirely: end this pass immediately without doing any work, and do **not** schedule anything (quit). This is a terminal stop, unlike pause — it is not resumed by `hermit resume`; starting `/hermit` again is required to resume autonomous operation.
+2. If a `.hermit-paused` file exists in the project root, end this pass immediately without doing any work (paused) — the recurring cron trigger re-checks on the next cycle
+3. Retrieve open Issues with `list_issues`
+4. Check open PRs for new review comments using `get_recent_pr_comments` with a `since` timestamp set to the last check time (store the current time before calling):
    - If new comments are found on any PR, post a summary comment on that PR acknowledging the feedback (use `add_issue_comment`)
    - Update the stored last-check timestamp to now
-6. Check open Issues for new comments using `get_issue_comments` with a `since` timestamp set to the last check time (store the current time before calling; track this timestamp separately from step 5's PR-comment-check timestamp and from step 7's requirements-sweep timestamp):
-   - For each open Issue retrieved in step 4, call `get_issue_comments` with that `since` timestamp
+5. Check open Issues for new comments using `get_issue_comments` with a `since` timestamp set to the last check time (store the current time before calling; track this timestamp separately from step 4's PR-comment-check timestamp and from step 6's requirements-sweep timestamp):
+   - For each open Issue retrieved in step 3, call `get_issue_comments` with that `since` timestamp
    - If new comments are found on an Issue, post a summary comment on that Issue acknowledging receipt (use `add_issue_comment`)
    - Update the stored last-check timestamp to now
-7. Run the requirements reconcile sweep roughly once an hour using `run_requirements_sweep`, tracking a separate "last requirements-sweep time" across cycles the same way step 5 tracks its own PR-comment-check "since" timestamp (store the current time before calling):
-   - Only call `run_requirements_sweep` when at least 3600 seconds have elapsed since the last recorded sweep time; otherwise skip this step for the current cycle (do not call the tool early — it runs the configured `test_command` for every requirement and shouldn't be wasted on sub-hourly cycles)
+6. Run the requirements reconcile sweep roughly once an hour using `run_requirements_sweep`, tracking a separate "last requirements-sweep time" across passes the same way step 4 tracks its own PR-comment-check "since" timestamp (store the current time before calling):
+   - Only call `run_requirements_sweep` when at least 3600 seconds have elapsed since the last recorded sweep time; otherwise skip this step for the current pass (do not call the tool early — it runs the configured `test_command` for every requirement and shouldn't be wasted on sub-hourly passes)
    - Update the stored last-sweep timestamp to now after calling
-8. If there are no Issues, wait 60 seconds and return to step 1
-9. For each Issue (up to 4 at a time):
+7. If there are no Issues, end this pass — the recurring cron trigger starts the next pass
+8. For each Issue (up to 4 at a time):
    a. Mark as in-progress with `assign_issue` (assignee: your own username)
    b. Create a worktree with `create_worktree` (base_branch: default branch)
-10. **Spawn all Engineers for the Issues prepared in step 9 in parallel at once using the Agent tool**
-    - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
-    - If the parallel count exceeds 4, process the first 4 and defer the rest to the next cycle
-11. Wait for all Engineers to complete
-12. Run `check_ci_status` on the PR for each Issue
+9. **Spawn all Engineers for the Issues prepared in step 8 in parallel at once using the Agent tool**
+   - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
+   - If the parallel count exceeds 4, process the first 4 and defer the rest to the next pass
+   - **Fallback when subagent nesting is unavailable:** if the Agent tool is not available in your context (you are already a subagent and cannot spawn further subagents), do **not** implement the Issues yourself, no matter how small or obvious the fix looks, and even though you likely still have `Edit`/`Write`/`Bash` in your toolset — those tools remain reserved for coordination (e.g. inspecting the worktree to write the completion report), never for authoring the Issue's actual solution. Instead: end this pass and include in your completion report, for each prepared Issue: number, title, body, `worktree_path`, and `branch`, so the main session can spawn the Engineers (see "Engineer fallback")
+10. Wait for all Engineers to complete
+11. Run `check_ci_status` on the PR for each Issue (including PRs opened by Engineers spawned via the Engineer fallback on an earlier pass — use `list_prs` to find open HERMIT PRs still awaiting evaluation)
     - If CI is failing: the tool automatically posts an investigation comment listing the failing checks; skip merging and wait for fixes
     - If CI is passing: run `evaluate_risk`
       - LOW / MEDIUM: run `merge_pr` with `worktree_path` and `branch` so the worktree is cleaned up automatically after a successful merge
@@ -55,7 +68,11 @@ Repeat the following cycle.
         - Check whether the branch is stale relative to the base branch in a way that could hide semantic conflicts, not just textual `mergeable` conflicts
         - Post your findings as a separate PR comment via `add_issue_comment`: a short summary of what changed, anything concerning, and an explicit recommendation (e.g. "looks safe to merge pending approval" vs. "found X, should be fixed first")
         - Skip merging and wait for a human decision
-13. Return to step 1
+12. End the pass with a short report of what was done — do **not** loop back to step 1 yourself; the recurring cron job fires the next pass
+
+### Engineer fallback (performed by the main session)
+
+If a completed background pass reports Issues it prepared (assigned + worktree created) but could not spawn Engineers for, the main session spawns them itself: for each reported Issue, call the Agent tool with `run_in_background: true` (use the model configured as `[model].engineer` in `harness.toml`, if set), passing the Issue number, title, body, `worktree_path`, and `branch`. The resulting PRs are picked up for CI/risk evaluation by a later background pass (background-cycle step 11).
 
 ---
 
