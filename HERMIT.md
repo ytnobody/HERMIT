@@ -95,7 +95,7 @@ Returns a list of open GitHub Issues that have not been started.
 { "label": "string (optional)" }
 
 // Output
-[{ "number": 42, "title": "...", "body": "...", "labels": [...] }]
+[{ "Number": 42, "Title": "...", "Body": "...", "Labels": [...] }]
 ```
 
 ### `assign_issue`
@@ -180,14 +180,14 @@ Closes a resolved GitHub Issue.
 
 ### `list_prs`
 
-Returns a list of open pull requests.
+Returns a list of open pull requests. Optionally filter by Issue number.
 
 ```json
 // Input
-{ "state": "open|closed|merged (optional, default: open)" }
+{ "issue_number": "number (optional) — if given, only PRs referencing this Issue are returned" }
 
 // Output
-[{ "number": 123, "title": "...", "branch": "...", "url": "..." }]
+[{ "pr_number": 123, "title": "...", "head_branch": "...", "issue_number": 42 }]
 ```
 
 ### `get_lessons`
@@ -216,26 +216,26 @@ Returns current harness configuration values.
 
 ### `review_pr`
 
-Performs static analysis on a PR and returns a review summary.
+Performs static analysis on a PR and posts a structured review comment (summary, risk level, suggestions) directly on the PR. The tool call itself returns only an acknowledgement that the comment was posted.
 
 ```json
 // Input
 { "pr_number": 123 }
 
 // Output
-{ "summary": "...", "risk_level": "LOW|MEDIUM|HIGH", "suggestions": ["..."] }
+{ "pr_number": 123, "comment_posted": true }
 ```
 
 ### `notify`
 
-Sends a notification via configured webhook (Slack, Discord, or generic).
+Sends a notification via configured webhook (Slack, Discord, or generic). Silently no-ops if no webhook is configured.
 
 ```json
 // Input
-{ "message": "..." }
+{ "event": "string — event name (e.g. issue_assigned, pr_merged, high_risk_detected)", "message": "string — human-readable notification message" }
 
 // Output
-{ "success": true }
+{ "sent": true, "event": "..." }
 ```
 
 ---
