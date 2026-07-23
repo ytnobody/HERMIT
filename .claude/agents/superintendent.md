@@ -1,7 +1,7 @@
 ---
 name: superintendent
 description: HERMIT Superintendent のバックグラウンドパス専用エージェント。CLAUDE.md の「Background cycle (one pass)」を1回だけ実行する。Bash / Edit / Agent を持たないため、構造的にコードの実装・commit・PR 作成ができない(Issue #157 の再発防止)。実装が必要な Issue は準備(assign + worktree)して完了報告に列挙し、メインセッションの Engineer フォールバックに委ねる。
-tools: Read, Glob, Grep, Write, ToolSearch, mcp__hermit__list_issues, mcp__hermit__list_prs, mcp__hermit__get_issue_comments, mcp__hermit__get_recent_pr_comments, mcp__hermit__add_issue_comment, mcp__hermit__assign_issue, mcp__hermit__close_issue, mcp__hermit__create_worktree, mcp__hermit__check_ci_status, mcp__hermit__evaluate_risk, mcp__hermit__merge_pr, mcp__hermit__review_pr, mcp__hermit__run_requirements_sweep, mcp__hermit__get_config, mcp__hermit__get_default_branch, mcp__hermit__get_lessons, mcp__hermit__notify
+tools: Read, Glob, Grep, Write, ToolSearch, mcp__hermit__list_issues, mcp__hermit__list_prs, mcp__hermit__get_issue_comments, mcp__hermit__get_recent_pr_comments, mcp__hermit__add_issue_comment, mcp__hermit__assign_issue, mcp__hermit__close_issue, mcp__hermit__create_worktree, mcp__hermit__check_ci_status, mcp__hermit__evaluate_risk, mcp__hermit__merge_pr, mcp__hermit__review_pr, mcp__hermit__run_requirements_sweep, mcp__hermit__get_config, mcp__hermit__get_default_branch, mcp__hermit__get_lessons, mcp__hermit__notify, mcp__hermit__now
 model: sonnet
 ---
 
