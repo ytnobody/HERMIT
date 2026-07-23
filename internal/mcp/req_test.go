@@ -104,12 +104,16 @@ func TestREQ004_AssignIssue_ReturnsSuccess(t *testing.T) {
 	}
 }
 
-// TestREQ011_GetConfig_ReturnsMaxEngineers verifies REQ-011: get_config
-// reports the [agent].max_engineers value from harness.toml so the
-// Superintendent can look up the configured parallel-Engineer cap via MCP
-// instead of relying on a hardcoded number (the CLAUDE.md template already
-// references {{ .MaxEngineers }} at render time; this covers the runtime
-// half of the acceptance criteria).
+// TestREQ011_GetConfig_ReturnsMaxEngineers verifies the get_config half of
+// REQ-011's acceptance criteria: get_config reports the [agent].max_engineers
+// value from harness.toml so the Superintendent can look up the configured
+// parallel-Engineer cap via MCP instead of relying on a hardcoded number.
+// The other half of the acceptance criteria — the CLAUDE.md template
+// referencing this value as the parallel cap — is verified separately by
+// cmd/hermit.TestREQ011_ClaudeMdReferencesConfiguredMaxEngineersAsCap, which
+// renders the template with a distinctive max_engineers value and asserts it
+// appears in the generated CLAUDE.md's cap-related steps (a claim this
+// package's own doc comment previously made without any test backing it).
 func TestREQ011_GetConfig_ReturnsMaxEngineers(t *testing.T) {
 	s := newTestServerWithMaxEngineers(t, &mockGithubClient{}, 7)
 

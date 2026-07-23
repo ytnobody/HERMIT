@@ -151,7 +151,7 @@ Superintendent が同時に生成する Engineer の数は `harness.toml` の `[
 
 - 受け入れ条件: `get_config` が harness.toml の max_engineers 値を返し、CLAUDE.md テンプレートが並列上限としてこの値を参照していること
 - verify: test
-- 実装状況: 実装済み — テンプレート側 (`cmd/hermit/templates/CLAUDE.md.tmpl` が `{{ .MaxEngineers }}` を展開し、超過分の繰り越しも記述) に加え、`get_config` (`internal/mcp/tools.go`) が `[agent].max_engineers` (既定値未設定または 0 以下のときは既定 4、`cmd/hermit/main.go` の `loadConfig`) を `max_engineers` として返すようになった (`internal/mcp/req_test.go` の `TestREQ011_GetConfig_ReturnsMaxEngineers`)。`owner`/`repo` を返さない点は HERMIT.md との差分として残るが、この要件の受け入れ条件 (`get_config` が max_engineers を返し、テンプレートがこの値を参照すること) には含まれない
+- 実装状況: 実装済み — テンプレート側 (`cmd/hermit/templates/CLAUDE.md.tmpl` が `{{ .MaxEngineers }}` を展開し、超過分の繰り越しも記述) に加え、`get_config` (`internal/mcp/tools.go`) が `[agent].max_engineers` (既定値未設定または 0 以下のときは既定 4、`cmd/hermit/main.go` の `loadConfig`) を `max_engineers` として返すようになった。受け入れ条件の両半分がそれぞれテストで検証されている: `get_config` 側は `internal/mcp/req_test.go` の `TestREQ011_GetConfig_ReturnsMaxEngineers`、CLAUDE.md テンプレート側は `cmd/hermit/inprocess_test.go` の `TestREQ011_ClaudeMdReferencesConfiguredMaxEngineersAsCap` (`hermit init` を任意の max_engineers 値で実行し、生成された CLAUDE.md の並列上限ステップにその値が実際に反映されることを検証。従来はコメントで「テンプレート側は実装済み」と主張するのみでテストが存在しなかった)。`owner`/`repo` を返さない点は HERMIT.md との差分として残るが、この要件の受け入れ条件には含まれない
 
 ## REQ-012: harness.toml による設定と GITHUB_TOKEN の非保存
 
