@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -536,6 +537,16 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 				resp["risk_overrides"] = repoRiskConfigs
 			}
 			b, _ := json.Marshal(resp)
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("now",
+			mcp.WithDescription("Returns the current wall-clock time as an RFC3339 string. Use this as an authoritative 'now' when computing elapsed time for cadence tracking (e.g. the PR-comment check, Issue-comment check, and requirements-sweep 'since'/last-run timestamps in the background cycle), instead of estimating the current time from context."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			b, _ := json.Marshal(map[string]any{"now": time.Now().UTC().Format(time.RFC3339)})
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)

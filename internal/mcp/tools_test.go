@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -1002,6 +1003,42 @@ func TestCheckCIStatus_Passing_DoesNotRecordFailure(t *testing.T) {
 	}
 	if failing {
 		t.Error("expected no CI failure history to be recorded when CI is passing")
+	}
+}
+
+// --- now (authoritative wall-clock timestamp) ---
+
+func TestNow_ReturnsParseableRFC3339CloseToActualTime(t *testing.T) {
+	s := newTestServer(t, &mockGithubClient{})
+
+	before := time.Now().UTC()
+	result := callTool(t, s, "now", map[string]any{})
+	after := time.Now().UTC()
+
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	nowStr, ok := got["now"].(string)
+	if !ok || nowStr == "" {
+		t.Fatalf("expected non-empty 'now' string, got %v", got["now"])
+	}
+
+	parsed, err := time.Parse(time.RFC3339, nowStr)
+	if err != nil {
+		t.Fatalf("expected 'now' to be a parseable RFC3339 timestamp, got %q: %v", nowStr, err)
+	}
+
+	if parsed.Before(before.Add(-5*time.Second)) || parsed.After(after.Add(5*time.Second)) {
+		t.Errorf("expected 'now' (%v) to be close to actual current time (between %v and %v)", parsed, before, after)
 	}
 }
 
