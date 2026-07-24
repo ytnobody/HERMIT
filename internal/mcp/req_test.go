@@ -17,7 +17,10 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/readiness"
+	"github.com/ytnobody/hermit/internal/risk"
 )
 
 // TestREQ002_RequiredMCPToolsRegistered verifies REQ-002: the MCP server
@@ -44,6 +47,247 @@ func TestREQ002_RequiredMCPToolsRegistered(t *testing.T) {
 			t.Errorf("required tool %q is not registered", name)
 		}
 	}
+}
+
+// toolIOSpec describes the documented input/output shape of one MCP tool as
+// recorded in HERMIT.md's "4. MCP Tool Specifications" section.
+type toolIOSpec struct {
+	// inputRequired/inputOptional list the documented input field names by
+	// required-ness. Implementations may register additional fields beyond
+	// these (e.g. multi-repo owner/repo, or fields added after the original
+	// 12-tool design) — that is treated as a compatible extension, not a
+	// schema violation, consistent with how REQUIREMENTS.md already
+	// describes HERMIT.md as trailing (not gating) the implementation.
+	inputRequired []string
+	inputOptional []string
+	// outputKeys lists top-level keys that must appear in a successful
+	// response, when checkOutput is non-nil.
+	outputKeys []string
+	// checkOutput, if set, invokes the tool (via callTool with the given
+	// args) and returns the decoded top-level JSON object to check
+	// outputKeys against. Left nil for tools whose output is already
+	// exercised by a dedicated test elsewhere in this package (e.g. merge_pr
+	// by TestREQ007/TestREQ008) or that require infra unrelated to schema
+	// shape (see create_worktree below).
+	checkOutput func(t *testing.T, s *server.MCPServer) map[string]any
+}
+
+// TestREQ002_ToolSchemasMatchHERMITDoc verifies the second half of REQ-002's
+// acceptance criteria, which TestREQ002_RequiredMCPToolsRegistered above does
+// not cover: "each tool follows the input/output schema documented in
+// HERMIT.md". For every required tool it checks that the registered MCP
+// input schema contains (at least) the documented fields with matching
+// required/optional-ness, and, where practical, that a successful call
+// returns the documented top-level output keys.
+//
+// Issue #163: REQUIREMENTS.md's REQ-002 block was re-hashed after an
+// unrelated edit, and reviewing this test against the current HERMIT.md
+// surfaced four tools (list_prs, notify, review_pr, list_issues) whose
+// documented schema had silently drifted from the implementation; HERMIT.md
+// was corrected to match the implementation for those four. get_config's
+// long-known owner/repo gap remains out of scope here (tracked by REQ-011).
+//
+// Issue #173: the requirements-sweep flagged REQ-002's hash as changed again.
+// The REQ-002 block's acceptance-criteria text itself is unchanged since
+// Issue #163 (git history confirms the only edit to the block after #163 was
+// this comment documenting the #163 fix, which is itself hashed as part of
+// the block and so re-triggers the sweep's change detection even though the
+// requirement it verifies did not move). Reviewed both required-tools
+// registration and the schema/output checks above against the current
+// REQUIREMENTS.md and HERMIT.md: all 12 required tools are covered, and the
+// documented input/output shapes for list_prs, notify, review_pr, and
+// list_issues (the four corrected under #163) still match the
+// implementation. No test changes were needed for #173 beyond this note.
+func TestREQ002_ToolSchemasMatchHERMITDoc(t *testing.T) {
+	specs := map[string]toolIOSpec{
+		"list_issues": {
+			inputOptional: []string{"label"},
+		},
+		"assign_issue": {
+			inputRequired: []string{"issue_number", "assignee"},
+			outputKeys:    []string{"success"},
+			checkOutput: func(t *testing.T, s *server.MCPServer) map[string]any {
+				return mustToolJSON(t, callTool(t, s, "assign_issue", map[string]any{
+					"issue_number": float64(1),
+					"assignee":     "someone",
+				}))
+			},
+		},
+		"create_worktree": {
+			inputRequired: []string{"issue_number", "base_branch"},
+			outputKeys:    []string{"worktree_path", "branch"},
+			checkOutput:   checkCreateWorktreeOutput,
+		},
+		"evaluate_risk": {
+			inputRequired: []string{"pr_number"},
+			outputKeys:    []string{"level", "reasons"},
+			checkOutput: func(t *testing.T, _ *server.MCPServer) map[string]any {
+				mock := &mockGithubClient{prStatus: &gh.PRStatus{Number: 1}}
+				s2 := newTestServer(t, mock)
+				return mustToolJSON(t, callTool(t, s2, "evaluate_risk", map[string]any{"pr_number": float64(1)}))
+			},
+		},
+		"merge_pr": {
+			inputRequired: []string{"pr_number"},
+			inputOptional: []string{"worktree_path", "branch"},
+			// Output (merged/reason) is already exercised by
+			// TestREQ007_MergePR_CIGatingAndHighRiskRejection and
+			// TestREQ008_MergePR_WorktreeCleanup.
+		},
+		"add_issue_comment": {
+			inputRequired: []string{"issue_number", "body"},
+			outputKeys:    []string{"success"},
+			checkOutput: func(t *testing.T, s *server.MCPServer) map[string]any {
+				return mustToolJSON(t, callTool(t, s, "add_issue_comment", map[string]any{
+					"issue_number": float64(1),
+					"body":         "hi",
+				}))
+			},
+		},
+		"close_issue": {
+			inputRequired: []string{"issue_number"},
+			outputKeys:    []string{"success"},
+			checkOutput: func(t *testing.T, s *server.MCPServer) map[string]any {
+				return mustToolJSON(t, callTool(t, s, "close_issue", map[string]any{
+					"issue_number": float64(1),
+				}))
+			},
+		},
+		"list_prs": {
+			inputOptional: []string{"issue_number"},
+		},
+		"get_lessons": {
+			outputKeys: []string{"lessons"},
+			checkOutput: func(t *testing.T, s *server.MCPServer) map[string]any {
+				return mustToolJSON(t, callTool(t, s, "get_lessons", map[string]any{}))
+			},
+		},
+		"get_config": {
+			// owner/repo are documented but intentionally not returned; see
+			// REQ-011 and the 現状把握サマリ gap table in REQUIREMENTS.md.
+			outputKeys: []string{"max_engineers", "loop_interval"},
+			checkOutput: func(t *testing.T, s *server.MCPServer) map[string]any {
+				return mustToolJSON(t, callTool(t, s, "get_config", map[string]any{}))
+			},
+		},
+		"review_pr": {
+			inputRequired: []string{"pr_number"},
+			outputKeys:    []string{"pr_number", "comment_posted"},
+			checkOutput: func(t *testing.T, s *server.MCPServer) map[string]any {
+				return mustToolJSON(t, callTool(t, s, "review_pr", map[string]any{"pr_number": float64(1)}))
+			},
+		},
+		"notify": {
+			inputRequired: []string{"event", "message"},
+			outputKeys:    []string{"sent", "event"},
+			checkOutput: func(t *testing.T, s *server.MCPServer) map[string]any {
+				return mustToolJSON(t, callTool(t, s, "notify", map[string]any{
+					"event":   "issue_assigned",
+					"message": "hello",
+				}))
+			},
+		},
+	}
+
+	s := newTestServer(t, &mockGithubClient{})
+	for name, spec := range specs {
+		t.Run(name, func(t *testing.T) {
+			st := s.GetTool(name)
+			if st == nil {
+				t.Fatalf("tool %q is not registered", name)
+			}
+			props := st.Tool.InputSchema.Properties
+			required := map[string]bool{}
+			for _, r := range st.Tool.InputSchema.Required {
+				required[r] = true
+			}
+			for _, field := range spec.inputRequired {
+				if _, ok := props[field]; !ok {
+					t.Errorf("documented required input %q is not registered", field)
+				} else if !required[field] {
+					t.Errorf("documented required input %q is registered but not marked required", field)
+				}
+			}
+			for _, field := range spec.inputOptional {
+				if _, ok := props[field]; !ok {
+					t.Errorf("documented optional input %q is not registered", field)
+				} else if required[field] {
+					t.Errorf("documented optional input %q is registered as required", field)
+				}
+			}
+
+			if spec.checkOutput == nil {
+				return
+			}
+			got := spec.checkOutput(t, s)
+			for _, key := range spec.outputKeys {
+				if _, ok := got[key]; !ok {
+					t.Errorf("documented output key %q missing from response %v", key, got)
+				}
+			}
+		})
+	}
+}
+
+// mustToolJSON decodes a successful tool result's text content into a
+// top-level JSON object for output-key assertions.
+func mustToolJSON(t *testing.T, result *mcp.CallToolResult) map[string]any {
+	t.Helper()
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", result.Content[0])
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &got); err != nil {
+		t.Fatalf("unmarshal error: %v (text: %s)", err, tc.Text)
+	}
+	return got
+}
+
+// checkCreateWorktreeOutput exercises create_worktree end-to-end against a
+// throwaway git repository (git.CreateWorktree shells out to git against the
+// process's current working directory), verifying the response contains the
+// documented worktree_path/branch keys.
+func checkCreateWorktreeOutput(t *testing.T, _ *server.MCPServer) map[string]any {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repo := t.TempDir()
+	gitIn := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitIn("init", "-b", "main")
+	gitIn("config", "user.email", "hermit-test@example.com")
+	gitIn("config", "user.name", "hermit-test")
+	gitIn("commit", "--allow-empty", "-m", "init")
+
+	// CreateWorktree runs git against the process working directory.
+	t.Chdir(repo)
+
+	srv := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(srv, &mockGithubClient{}, 0, t.TempDir(), "req002schema/gh-test", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4)
+
+	got := mustToolJSON(t, callTool(t, srv, "create_worktree", map[string]any{
+		"issue_number": float64(163),
+		"base_branch":  "main",
+	}))
+
+	if wt, _ := got["worktree_path"].(string); wt != "" {
+		t.Cleanup(func() {
+			_ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run()
+		})
+	}
+	return got
 }
 
 // TestREQ003_ListIssues_ExcludesNonQueueIssues verifies the exclusion half of
@@ -104,12 +348,16 @@ func TestREQ004_AssignIssue_ReturnsSuccess(t *testing.T) {
 	}
 }
 
-// TestREQ011_GetConfig_ReturnsMaxEngineers verifies REQ-011: get_config
-// reports the [agent].max_engineers value from harness.toml so the
-// Superintendent can look up the configured parallel-Engineer cap via MCP
-// instead of relying on a hardcoded number (the CLAUDE.md template already
-// references {{ .MaxEngineers }} at render time; this covers the runtime
-// half of the acceptance criteria).
+// TestREQ011_GetConfig_ReturnsMaxEngineers verifies the get_config half of
+// REQ-011's acceptance criteria: get_config reports the [agent].max_engineers
+// value from harness.toml so the Superintendent can look up the configured
+// parallel-Engineer cap via MCP instead of relying on a hardcoded number.
+// The other half of the acceptance criteria — the CLAUDE.md template
+// referencing this value as the parallel cap — is verified separately by
+// cmd/hermit.TestREQ011_ClaudeMdReferencesConfiguredMaxEngineersAsCap, which
+// renders the template with a distinctive max_engineers value and asserts it
+// appears in the generated CLAUDE.md's cap-related steps (a claim this
+// package's own doc comment previously made without any test backing it).
 func TestREQ011_GetConfig_ReturnsMaxEngineers(t *testing.T) {
 	s := newTestServerWithMaxEngineers(t, &mockGithubClient{}, 7)
 
