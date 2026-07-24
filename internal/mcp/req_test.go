@@ -86,6 +86,18 @@ type toolIOSpec struct {
 // documented schema had silently drifted from the implementation; HERMIT.md
 // was corrected to match the implementation for those four. get_config's
 // long-known owner/repo gap remains out of scope here (tracked by REQ-011).
+//
+// Issue #173: the requirements-sweep flagged REQ-002's hash as changed again.
+// The REQ-002 block's acceptance-criteria text itself is unchanged since
+// Issue #163 (git history confirms the only edit to the block after #163 was
+// this comment documenting the #163 fix, which is itself hashed as part of
+// the block and so re-triggers the sweep's change detection even though the
+// requirement it verifies did not move). Reviewed both required-tools
+// registration and the schema/output checks above against the current
+// REQUIREMENTS.md and HERMIT.md: all 12 required tools are covered, and the
+// documented input/output shapes for list_prs, notify, review_pr, and
+// list_issues (the four corrected under #163) still match the
+// implementation. No test changes were needed for #173 beyond this note.
 func TestREQ002_ToolSchemasMatchHERMITDoc(t *testing.T) {
 	specs := map[string]toolIOSpec{
 		"list_issues": {
