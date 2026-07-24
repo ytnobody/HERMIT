@@ -449,6 +449,12 @@ func TestCmdInit_ClaudeMdIncludesGhSnapGuideline(t *testing.T) {
 // test's own doc comment asserted the template half was "already" correct
 // without any test actually exercising the rendered template, which is the
 // gap this test closes.
+//
+// Re-verified under Issue #174 after PR #172 merged the previously separate
+// "Foreground dispatch" / "Background cycle" sections into a single
+// "Superintendent cycle": the assertions below still target substrings that
+// remain present verbatim in the rendered template, so no changes were
+// needed here.
 func TestREQ011_ClaudeMdReferencesConfiguredMaxEngineersAsCap(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := os.Getwd()
