@@ -684,12 +684,13 @@ func TestCmdInit_ClaudeMdWiresEngineerModelAndEffort(t *testing.T) {
 	}
 }
 
-// TestCmdInit_ClaudeMdDispatchesBackgroundSuperintendent verifies that the
-// generated CLAUDE.md instructs the foreground /hermit invocation to delegate
-// the Superintendent cycle to a background subagent (Agent tool with
-// run_in_background: true) wired to the configured Superintendent
-// model/effort, instead of running the cycle inline (issue #147).
-func TestCmdInit_ClaudeMdDispatchesBackgroundSuperintendent(t *testing.T) {
+// TestCmdInit_ClaudeMdRunsSuperintendentInline verifies that the generated
+// CLAUDE.md instructs /hermit to run the Superintendent cycle synchronously
+// inline (no background Superintendent subagent per cron tick, which was
+// found to exhaust the session's subagent-spawn cap on long-running loops —
+// issue #171), while still wiring the configured Engineer/Analyst
+// model/effort onto the (bounded, per-pass) Engineer/Analyst spawns.
+func TestCmdInit_ClaudeMdRunsSuperintendentInline(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := os.Getwd()
 	os.Chdir(dir)
@@ -728,37 +729,48 @@ func TestCmdInit_ClaudeMdDispatchesBackgroundSuperintendent(t *testing.T) {
 		t.Fatalf("CLAUDE.md not created: %v", err)
 	}
 	content := string(claudeMd)
-	if !strings.Contains(content, "### Foreground dispatch") {
-		t.Errorf("CLAUDE.md missing foreground dispatch section:\n%s", content)
+	if !strings.Contains(content, "### Superintendent cycle (one pass, run inline") {
+		t.Errorf("CLAUDE.md missing inline Superintendent cycle section:\n%s", content)
 	}
-	if !strings.Contains(content, "### Background cycle") {
-		t.Errorf("CLAUDE.md missing background cycle section:\n%s", content)
+	if strings.Contains(content, "### Foreground dispatch") {
+		t.Errorf("CLAUDE.md should no longer have a separate Foreground dispatch section:\n%s", content)
 	}
-	// Superintendent model/effort wiring on the background dispatch step
-	// (claude-cheap preset superintendent model, effort answered as "high").
-	want := "`run_in_background: true` and `model: \"claude-sonnet-5\"` and `effort: \"high\"`"
+	if strings.Contains(content, "### Background cycle") {
+		t.Errorf("CLAUDE.md should no longer have a separate Background cycle section:\n%s", content)
+	}
+	if strings.Contains(content, "### Engineer fallback") {
+		t.Errorf("CLAUDE.md should no longer have an Engineer fallback section (issue #171):\n%s", content)
+	}
+	// The Superintendent pass itself is no longer spawned via the Agent tool at
+	// all, so its own model/effort no longer appears in an Agent-tool wiring
+	// clause. Engineer spawns remain bounded per-pass background subagents
+	// (`run_in_background: true`), wired to the configured Engineer
+	// model/effort (claude-cheap preset Engineer model, effort answered as
+	// "medium").
+	if !strings.Contains(content, "run_in_background: true") {
+		t.Errorf("CLAUDE.md Engineer-spawn step missing run_in_background: true:\n%s", content)
+	}
+	want := "`model: \"claude-haiku-4-5-20251001\"` and `effort: \"medium\"`"
 	if !strings.Contains(content, want) {
-		t.Errorf("CLAUDE.md dispatch step missing superintendent model/effort wiring (want %s):\n%s", want, content)
-	}
-	if !strings.Contains(content, "### Engineer fallback") {
-		t.Errorf("CLAUDE.md missing Engineer fallback section:\n%s", content)
+		t.Errorf("CLAUDE.md Engineer-spawn step missing engineer model/effort wiring (want %s):\n%s", want, content)
 	}
 }
 
-// TestEmbeddedHermitCommandDispatchesBackground verifies that the embedded
-// /hermit slash-command template tells the model to run only the foreground
-// dispatch and delegate the cycle to a background subagent (issue #147).
-func TestEmbeddedHermitCommandDispatchesBackground(t *testing.T) {
+// TestEmbeddedHermitCommandRunsSuperintendentInline verifies that the
+// embedded /hermit slash-command template tells the model to run the
+// Superintendent cycle synchronously inline, instead of dispatching a
+// background Superintendent subagent per cron tick (issue #171).
+func TestEmbeddedHermitCommandRunsSuperintendentInline(t *testing.T) {
 	data, err := templateFS.ReadFile("templates/commands/hermit.md")
 	if err != nil {
 		t.Fatalf("embedded templates/commands/hermit.md not readable: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "run_in_background: true") {
-		t.Errorf("hermit.md command missing run_in_background dispatch instruction:\n%s", content)
+	if !strings.Contains(content, "inline") {
+		t.Errorf("hermit.md command missing instruction to run the cycle inline:\n%s", content)
 	}
-	if !strings.Contains(content, "Foreground dispatch") {
-		t.Errorf("hermit.md command missing reference to the foreground dispatch steps:\n%s", content)
+	if strings.Contains(content, "Foreground dispatch") {
+		t.Errorf("hermit.md command should no longer reference a separate foreground dispatch step:\n%s", content)
 	}
 }
 
