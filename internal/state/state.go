@@ -9,8 +9,9 @@
 //   - The get_loop_state / update_loop_state MCP tools (internal/mcp),
 //     called from inside a Superintendent pass, own
 //     PRCommentsSince / IssueCommentsSince / RequirementsSweepSince /
-//     HealthChecksSince — the "since" timestamps the Superintendent cycle
-//     previously had to hand-write into the file itself.
+//     HealthChecksSince / SelfAuditSince — the "since" timestamps the
+//     Superintendent cycle previously had to hand-write into the file
+//     itself.
 //
 // Either writer only ever does a load-modify-save round trip, and the two
 // never run concurrently by construction: `hermit run` blocks on the
@@ -59,6 +60,10 @@ type LoopState struct {
 	// HealthChecksSince is the last time run_health_checks ran, set via
 	// update_loop_state (Issue #190).
 	HealthChecksSince *time.Time `json:"health_checks_since,omitempty"`
+	// SelfAuditSince is the last time run_self_audit ran (either via the
+	// idle-time cadence step or an on-demand call), set via
+	// update_loop_state (Issue #164).
+	SelfAuditSince *time.Time `json:"self_audit_since,omitempty"`
 	// LastSuccessTick is the wall-clock time of the most recent
 	// `hermit run` pass that completed without error. Written directly by
 	// internal/runloop, not via an MCP tool.

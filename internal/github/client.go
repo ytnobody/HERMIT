@@ -179,8 +179,17 @@ func (c *Client) isTrustedAuthor(association string) bool {
 // are not silently dropped: each one is logged so a human operator watching
 // HERMIT's logs can notice.
 func (c *Client) listOpenIssuesFromRepo(owner, repo, label string) ([]Issue, error) {
+	return c.listIssuesFromRepoWithState(owner, repo, label, "open")
+}
+
+// listIssuesFromRepoWithState is the shared implementation behind
+// listOpenIssuesFromRepo (state="open") and ListIssuesAnyState (state="all"):
+// it fetches issues from a specific owner/repo pair in the given GitHub
+// issue-list state, optionally filtering by label. Each returned Issue has
+// its Owner and Repo fields set to the provided values.
+func (c *Client) listIssuesFromRepoWithState(owner, repo, label, state string) ([]Issue, error) {
 	opts := &gogithub.IssueListByRepoOptions{
-		State: "open",
+		State: state,
 	}
 	if label != "" {
 		opts.Labels = []string{label}
@@ -226,6 +235,25 @@ func (c *Client) ListOpenIssues(label string) ([]Issue, error) {
 		return nil, err
 	}
 	// Clear Owner/Repo in single-repo mode for backward compat (callers don't expect them).
+	for i := range issues {
+		issues[i].Owner = ""
+		issues[i].Repo = ""
+	}
+	return issues, nil
+}
+
+// ListIssuesAnyState returns issues in any state (open or closed) from the
+// client's primary repository, optionally filtered by label. Owner/Repo
+// fields are NOT set, mirroring ListOpenIssues' single-repo backward
+// compatibility. This is used by callers that need to dedupe against the
+// full Issue history rather than just the open queue — e.g. the self-audit
+// sweep (Issue #164), which must not re-file an Issue for a finding whose
+// Issue was already opened and since closed.
+func (c *Client) ListIssuesAnyState(label string) ([]Issue, error) {
+	issues, err := c.listIssuesFromRepoWithState(c.owner, c.repo, label, "all")
+	if err != nil {
+		return nil, err
+	}
 	for i := range issues {
 		issues[i].Owner = ""
 		issues[i].Repo = ""
