@@ -196,3 +196,11 @@ HERMIT 自身を制約する制御面 (`internal/risk/`・`internal/permissions/
 - 受け入れ条件: `internal/risk/`・`internal/permissions/`・`internal/readiness/`・`harness.toml`・`.claude/`・`CLAUDE.md` のいずれかのみを 1 ファイル 1 行変更しても HIGH と判定されること。制御面以外の `internal/` 配下の変更や `cmd/hermit/templates/` 配下のみの変更は従来通りの判定 (MEDIUM・LOW) を維持すること
 - verify: test
 - 実装状況: 実装済み — `internal/risk/evaluator.go` の `DefaultConfig()`。`internal/risk/req_test.go` の `TestREQ015_ControlPlanePathsAreHighRisk` で検証
+
+## REQ-016: review-test のハッシュ判定は仕様(受け入れ条件・verify)のみを対象とする
+
+reconcile sweep の review-test は、要件の「仕様」が変わったときにのみ発火しなければならない。要件ブロック全体 (見出し・説明文・`実装状況` 進捗メモを含む) をハッシュ対象にすると、review-test を解決する作業自体が `実装状況` 行を書き換えるため、次の sweep で再び「テキストが変化した」と判定され review-test が無限に再発火する自己増殖ループになる (Issue #182)。ハッシュは `受け入れ条件` と `verify` の値のみから計算し、`実装状況` を含む残りのブロックは対象外とする。
+
+- 受け入れ条件: `Requirement.Hash` が `受け入れ条件` と `verify` のみから計算され、要件ブロック全体からは計算されないこと。`実装状況` 行のみを変更しても次の sweep で review-test が発火しないこと。`受け入れ条件` の変更、および `verify` の `test` ↔ `manual` の切り替えは従来どおり発火すること。見出しや説明文のみの変更では発火しないこと。ハッシュストアに計算方式のバージョンが記録され、方式変更後の初回 sweep は全件を再計算・保存するのみで Issue を起票しないこと
+- verify: test
+- 実装状況: 実装済み — `internal/requirements/requirements.go` の `specHash` が `AcceptanceCriteria` と `Verify` のみからハッシュを計算するように変更 (旧 `hashText(block)` を置き換え)。`internal/requirements/hashstore.go` の `HashStore` インターフェースを `Load() (version int, hashes map[string]string, err error)` / `Save(version int, hashes map[string]string) error` に拡張し、`HashSchemeVersion` 定数 (現在値 2) を導入。旧形式 (バージョン無しの素の map) のファイルは version 0 として扱われ後方互換。`internal/requirements/sweep.go` の `Sweep` は読み込んだバージョンが `HashSchemeVersion` と異なる場合 `schemeChanged` として HashChanged 判定を強制的に false にし (review-test を発火させず)、sweep 終了時に現行バージョンでハッシュを保存し直すことで移行を1回のsweepで完了させる。自己増殖ループの回帰テストは `internal/requirements/sweep_test.go` の `TestSweep_ImplementationStatusOnlyChange_DoesNotFireReviewTest`、スキーマ移行の回帰テストは同ファイルの `TestSweep_HashSchemeMigration_DoesNotFireReviewTest_JustRecomputesAndSaves`、ハッシュ計算自体の単体テストは `internal/requirements/requirements_test.go` の `TestParse_HashUnaffectedByImplementationStatusField` / `TestParse_HashUnaffectedByTitleOrDescriptionOnly` / `TestParse_HashChangesWithVerifyMode` で検証。REQ-ID 命名規約に沿った `TestREQ016_ReviewTestHashIgnoresImplementationStatus` を追加
