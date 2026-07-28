@@ -105,6 +105,10 @@ func (m *mockGithubClient) ListAllIssues(_ []gh.RepoConfig) ([]gh.Issue, error) 
 	return m.issues, m.issuesErr
 }
 
+func (m *mockGithubClient) ListIssuesAnyState(_ string) ([]gh.Issue, error) {
+	return m.issues, m.issuesErr
+}
+
 func (m *mockGithubClient) AssignIssue(_ int, _ string) error {
 	return m.assignErr
 }
@@ -1949,5 +1953,101 @@ func TestRunHealthChecks_PassingCheck_NoExistingIssue_NoOp(t *testing.T) {
 	}
 	if len(mock.createdIssueTitles) != 0 || len(mock.postedComments) != 0 {
 		t.Errorf("expected no side effects, got created=%v posted=%v", mock.createdIssueTitles, mock.postedComments)
+	}
+}
+
+// --- run_self_audit (Issue #164) ---
+
+func TestRunSelfAudit_NoFindings_ReturnsInstructionsWithoutFiling(t *testing.T) {
+	mock := &mockGithubClient{}
+	s := newTestServer(t, mock)
+
+	got := mustToolJSON(t, callTool(t, s, "run_self_audit", map[string]any{}))
+	instructions, _ := got["instructions"].(string)
+	if instructions == "" {
+		t.Fatal("expected non-empty instructions when called with no findings")
+	}
+	if !strings.Contains(instructions, "bug") && !strings.Contains(instructions, "Bug") {
+		t.Errorf("instructions = %q, want it to mention bugs", instructions)
+	}
+	if len(mock.createdIssueTitles) != 0 {
+		t.Errorf("expected no issues filed when no findings are provided, got %v", mock.createdIssueTitles)
+	}
+}
+
+func TestRunSelfAudit_EmptyFindingsArray_ReturnsInstructionsWithoutFiling(t *testing.T) {
+	mock := &mockGithubClient{}
+	s := newTestServer(t, mock)
+
+	got := mustToolJSON(t, callTool(t, s, "run_self_audit", map[string]any{"findings": []any{}}))
+	if _, ok := got["instructions"]; !ok {
+		t.Errorf("expected instructions field for an empty findings array, got %v", got)
+	}
+	if len(mock.createdIssueTitles) != 0 {
+		t.Errorf("expected no issues filed, got %v", mock.createdIssueTitles)
+	}
+}
+
+func TestRunSelfAudit_NewFinding_FilesIssueWithSelfAuditLabel(t *testing.T) {
+	mock := &mockGithubClient{}
+	s := newTestServer(t, mock)
+
+	got := mustToolJSON(t, callTool(t, s, "run_self_audit", map[string]any{
+		"findings": []any{
+			map[string]any{"title": "nil deref in foo.Bar", "body": "detail about the bug"},
+		},
+	}))
+	if opened, _ := got["issues_opened"].(float64); opened != 1 {
+		t.Fatalf("expected issues_opened=1, got %v (full: %v)", got["issues_opened"], got)
+	}
+	if dup, _ := got["duplicates_skipped"].(float64); dup != 0 {
+		t.Errorf("expected duplicates_skipped=0, got %v", dup)
+	}
+	if len(mock.createdIssueTitles) != 1 {
+		t.Fatalf("expected exactly one issue to be created, got %d: %v", len(mock.createdIssueTitles), mock.createdIssueTitles)
+	}
+	if !strings.Contains(mock.createdIssueTitles[0], "nil deref in foo.Bar") {
+		t.Errorf("created issue title = %q, want it to contain the finding title", mock.createdIssueTitles[0])
+	}
+	if len(mock.addedLabels) != 1 || mock.addedLabels[0].label != "self-audit" {
+		t.Errorf("addedLabels = %v, want a single %q label", mock.addedLabels, "self-audit")
+	}
+}
+
+func TestRunSelfAudit_DuplicateFinding_SkipsFilingAgainstClosedIssue(t *testing.T) {
+	mock := &mockGithubClient{
+		issues: []gh.Issue{
+			{Number: 5, Title: "[self-audit] nil deref in foo.Bar"}, // e.g. a closed dup
+		},
+	}
+	s := newTestServer(t, mock)
+
+	got := mustToolJSON(t, callTool(t, s, "run_self_audit", map[string]any{
+		"findings": []any{
+			map[string]any{"title": "nil deref in foo.Bar", "body": "detail"},
+		},
+	}))
+	if opened, _ := got["issues_opened"].(float64); opened != 0 {
+		t.Errorf("expected issues_opened=0 (should dedupe), got %v", opened)
+	}
+	if dup, _ := got["duplicates_skipped"].(float64); dup != 1 {
+		t.Errorf("expected duplicates_skipped=1, got %v", dup)
+	}
+	if len(mock.createdIssueTitles) != 0 {
+		t.Errorf("expected no duplicate issue to be created, got %v", mock.createdIssueTitles)
+	}
+}
+
+func TestRunSelfAudit_MissingTitle_ReturnsError(t *testing.T) {
+	mock := &mockGithubClient{}
+	s := newTestServer(t, mock)
+
+	result := callTool(t, s, "run_self_audit", map[string]any{
+		"findings": []any{
+			map[string]any{"body": "no title here"},
+		},
+	})
+	if !result.IsError {
+		t.Fatal("expected an error result for a finding missing a title")
 	}
 }

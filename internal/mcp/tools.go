@@ -18,6 +18,7 @@ import (
 	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/requirements"
 	"github.com/ytnobody/hermit/internal/risk"
+	"github.com/ytnobody/hermit/internal/selfaudit"
 	"github.com/ytnobody/hermit/internal/state"
 )
 
@@ -58,8 +59,17 @@ type githubClient interface {
 	// AddLabel is used by the run_health_checks tool to label newly-opened
 	// production-incident issues via healthcheck.NewGitHubIssueClient — see
 	// healthcheck.ghClient, which this interface must remain a superset of
-	// (Issue #190).
+	// (Issue #190). It is also used by run_self_audit to label newly-opened
+	// self-audit-finding issues via selfaudit.NewGitHubIssueClient (Issue
+	// #164).
 	AddLabel(number int, label string) error
+	// ListIssuesAnyState is used by the run_self_audit tool to dedupe
+	// findings against both open and closed issues via
+	// selfaudit.NewGitHubIssueClient — see selfaudit.ghClient, which this
+	// interface must remain a superset of (Issue #164). Unlike
+	// ListOpenIssues, a self-audit finding whose issue was already filed and
+	// since closed must not be re-filed.
+	ListIssuesAnyState(label string) ([]gh.Issue, error)
 }
 
 // resolveRiskConfig returns the risk.Config to apply for the given owner/repo
@@ -560,7 +570,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("get_loop_state",
-			mcp.WithDescription("Returns the cadence-tracking timestamps persisted in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, and health_checks_since (RFC3339, omitted if never recorded) — the 'since' values the Superintendent cycle uses to decide when it last checked PR comments, checked Issue comments, ran the requirements sweep, and ran the health-check sweep. Also reports status ('running', 'paused', or 'quit' — set via `hermit pause`/`hermit resume`/`hermit quit`; defaults to 'running' when never recorded), last_success_tick, and consecutive_failures, written by `hermit run`'s own tick loop. This file is owned by HERMIT's Go side: read/write these cadence timestamps only via this tool and update_loop_state, never by hand-writing the JSON file."),
+			mcp.WithDescription("Returns the cadence-tracking timestamps persisted in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, health_checks_since, and self_audit_since (RFC3339, omitted if never recorded) — the 'since' values the Superintendent cycle uses to decide when it last checked PR comments, checked Issue comments, ran the requirements sweep, ran the health-check sweep, and ran the idle-time self-audit sweep. Also reports status ('running', 'paused', or 'quit' — set via `hermit pause`/`hermit resume`/`hermit quit`; defaults to 'running' when never recorded), last_success_tick, and consecutive_failures, written by `hermit run`'s own tick loop. This file is owned by HERMIT's Go side: read/write these cadence timestamps only via this tool and update_loop_state, never by hand-writing the JSON file."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			st, err := state.Load(state.Path(rootDir))
@@ -574,11 +584,12 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("update_loop_state",
-			mcp.WithDescription("Updates one or more of the cadence-tracking timestamps in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, health_checks_since, each an RFC3339 timestamp. Only the fields provided are changed; omitted fields are left as-is. Call the now tool first to get an authoritative current timestamp to pass in, then use this instead of writing the JSON file directly. Returns the full updated state."),
+			mcp.WithDescription("Updates one or more of the cadence-tracking timestamps in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, health_checks_since, self_audit_since, each an RFC3339 timestamp. Only the fields provided are changed; omitted fields are left as-is. Call the now tool first to get an authoritative current timestamp to pass in, then use this instead of writing the JSON file directly. Returns the full updated state."),
 			mcp.WithString("pr_comments_since", mcp.Description("RFC3339 timestamp to record as the last PR-review-comment check time")),
 			mcp.WithString("issue_comments_since", mcp.Description("RFC3339 timestamp to record as the last Issue-comment check time")),
 			mcp.WithString("requirements_sweep_since", mcp.Description("RFC3339 timestamp to record as the last requirements-sweep time")),
 			mcp.WithString("health_checks_since", mcp.Description("RFC3339 timestamp to record as the last health-check sweep time")),
+			mcp.WithString("self_audit_since", mcp.Description("RFC3339 timestamp to record as the last self-audit sweep time")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			statePath := state.Path(rootDir)
@@ -613,6 +624,13 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 					return mcp.NewToolResultError(fmt.Sprintf("health_checks_since: %v", err)), nil
 				}
 				st.HealthChecksSince = &t
+			}
+			if v := req.GetString("self_audit_since", ""); v != "" {
+				t, err := time.Parse(time.RFC3339, v)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("self_audit_since: %v", err)), nil
+				}
+				st.SelfAuditSince = &t
 			}
 			if err := state.Save(statePath, st); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
@@ -801,6 +819,69 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
+
+	s.AddTool(
+		mcp.NewTool("run_self_audit",
+			mcp.WithDescription("Runs the idle-time self-audit sweep (Issue #164): a lightweight code-review pass looking for bugs, missing test coverage, and security holes, used to keep HERMIT finding work when the Issue queue is empty. This tool is two-phase and stateless between calls — it does not run any analysis itself:\n\n1. Call with no 'findings' argument. The response's 'instructions' field describes the review to perform (see selfaudit.Instructions) — read it and actually perform that review against the current codebase.\n2. For each concrete finding, call this tool again passing 'findings': an array of {\"title\", \"body\"} objects, one per finding. Each finding is deduped against existing open AND closed GitHub Issues by a normalized-title match (so a finding whose Issue was already filed and since closed is not re-filed) and, if not a duplicate, filed as a new Issue labeled 'self-audit'. Returns a summary of how many issues were opened vs. skipped as duplicates.\n\nThe caller (Superintendent) must never fix a finding itself — only file the Issue and leave implementation to the normal Engineer pipeline (same 'coordinator, not implementer' rule as every other step). The Superintendent loop should call this roughly hourly when the Issue queue is empty (tracking its own 'last self-audit' timestamp via self_audit_since, the same way it tracks requirements_sweep_since), not on every cycle. The on-demand caller (e.g. a human in a chat session) may call it any time without waiting for that cadence — both paths share the exact same dedupe/filing logic (internal/selfaudit.File)."),
+			mcp.WithArray("findings",
+				mcp.Description("Findings to file as (deduped) GitHub Issues, one call after the review described in 'instructions' has actually been performed. Omit entirely (or pass an empty array) to just receive the instructions without filing anything."),
+				mcp.Items(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title": map[string]any{
+							"type":        "string",
+							"description": "Short human-readable summary of the finding, e.g. \"nil pointer dereference in foo.Bar when cfg is empty\". Do not include a [self-audit] prefix — it is added automatically.",
+						},
+						"body": map[string]any{
+							"type":        "string",
+							"description": "Full finding detail: what/where the problem is, why it matters, and file references. Becomes the Issue body verbatim.",
+						},
+					},
+					"required": []string{"title", "body"},
+				}),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			rawFindings, hasFindings := req.GetArguments()["findings"]
+			findingsList, _ := rawFindings.([]any)
+			if !hasFindings || len(findingsList) == 0 {
+				b, _ := json.Marshal(map[string]any{
+					"instructions": selfaudit.Instructions,
+					"note":         "No findings provided — no Issues were filed. Perform the review described in 'instructions', then call run_self_audit again with a non-empty 'findings' array for each concrete problem found.",
+				})
+				return mcp.NewToolResultText(string(b)), nil
+			}
+
+			findings := make([]selfaudit.Finding, 0, len(findingsList))
+			for i, raw := range findingsList {
+				obj, ok := raw.(map[string]any)
+				if !ok {
+					return mcp.NewToolResultError(fmt.Sprintf("findings[%d]: expected an object with title/body", i)), nil
+				}
+				title, _ := obj["title"].(string)
+				body, _ := obj["body"].(string)
+				if title == "" {
+					return mcp.NewToolResultError(fmt.Sprintf("findings[%d]: title is required", i)), nil
+				}
+				findings = append(findings, selfaudit.Finding{Title: title, Body: body})
+			}
+
+			summary, err := selfaudit.File(findings, selfaudit.NewGitHubIssueClient(client))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(map[string]any{
+				"findings_received":  summary.FindingsReceived,
+				"issues_opened":      summary.IssuesOpened,
+				"duplicates_skipped": summary.Duplicates,
+				"results":            summary.Results,
+			})
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
 }
 
 // loopStateResponse converts a state.LoopState into the JSON-friendly shape
@@ -825,6 +906,7 @@ func loopStateResponse(st state.LoopState) map[string]any {
 	setIfNotNil("issue_comments_since", st.IssueCommentsSince)
 	setIfNotNil("requirements_sweep_since", st.RequirementsSweepSince)
 	setIfNotNil("health_checks_since", st.HealthChecksSince)
+	setIfNotNil("self_audit_since", st.SelfAuditSince)
 	setIfNotNil("last_success_tick", st.LastSuccessTick)
 	return resp
 }

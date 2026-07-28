@@ -14,7 +14,7 @@ func TestLoadMissingFileReturnsZeroValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
-	if st.PRCommentsSince != nil || st.IssueCommentsSince != nil || st.RequirementsSweepSince != nil || st.HealthChecksSince != nil {
+	if st.PRCommentsSince != nil || st.IssueCommentsSince != nil || st.RequirementsSweepSince != nil || st.HealthChecksSince != nil || st.SelfAuditSince != nil {
 		t.Fatalf("Load on missing file: want zero-value LoopState, got %+v", st)
 	}
 	if st.ConsecutiveFailures != 0 {
@@ -32,6 +32,7 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 		IssueCommentsSince:     &now,
 		RequirementsSweepSince: &now,
 		HealthChecksSince:      &now,
+		SelfAuditSince:         &now,
 		LastSuccessTick:        &now,
 		ConsecutiveFailures:    2,
 	}
@@ -54,6 +55,9 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 	}
 	if got.HealthChecksSince == nil || !got.HealthChecksSince.Equal(now) {
 		t.Errorf("HealthChecksSince = %v, want %v", got.HealthChecksSince, now)
+	}
+	if got.SelfAuditSince == nil || !got.SelfAuditSince.Equal(now) {
+		t.Errorf("SelfAuditSince = %v, want %v", got.SelfAuditSince, now)
 	}
 	if got.LastSuccessTick == nil || !got.LastSuccessTick.Equal(now) {
 		t.Errorf("LastSuccessTick = %v, want %v", got.LastSuccessTick, now)
