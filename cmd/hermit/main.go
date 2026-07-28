@@ -20,6 +20,7 @@ import (
 
 	"github.com/ytnobody/hermit/internal/git"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/healthcheck"
 	"github.com/ytnobody/hermit/internal/mcp"
 	"github.com/ytnobody/hermit/internal/notification"
 	"github.com/ytnobody/hermit/internal/permissions"
@@ -77,6 +78,17 @@ func (r RiskConfig) toRiskConfig() risk.Config {
 		MediumLineThreshold:  r.MediumLineThreshold,
 		RequireHumanApproval: r.RequireHumanApproval,
 	}
+}
+
+// HealthCheckEntry is a single [[health_checks]] entry: a named production
+// health check HERMIT runs periodically via the run_health_checks MCP tool
+// (Issue #190). Only Type "command" (the default when empty) is supported
+// today; entries with any other Type are skipped by healthcheck.RunChecks
+// as a forward-compatible no-op.
+type HealthCheckEntry struct {
+	Name    string `toml:"name"`
+	Command string `toml:"command"`
+	Type    string `toml:"type"`
 }
 
 type Config struct {
@@ -164,7 +176,14 @@ type Config struct {
 		// needing to opt in.
 		Paths []string `toml:"paths"`
 	} `toml:"requirements"`
-	Security struct {
+	// HealthChecks is the [[health_checks]] array of tables (Issue #190):
+	// production health-check commands run periodically by the
+	// run_health_checks MCP tool. An empty/omitted list means the project
+	// has not opted into production health checks, in which case
+	// run_health_checks is a no-op — existing projects see no change in
+	// behavior.
+	HealthChecks []HealthCheckEntry `toml:"health_checks"`
+	Security     struct {
 		// TrustedAuthorAssociations is the allowlist of GitHub
 		// "author_association" values (e.g. "OWNER", "MEMBER",
 		// "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE")
@@ -530,6 +549,8 @@ func cmdServe() {
 		TestCommand: cfg.Requirements.TestCommand,
 	}
 
+	healthChecks := resolveHealthChecks(cfg)
+
 	model := mcp.ModelConfig{
 		Superintendent:       cfg.Model.Superintendent,
 		Engineer:             cfg.Model.Engineer,
@@ -539,7 +560,7 @@ func cmdServe() {
 		AnalystEffort:        resolveAnalystEffort(cfg),
 	}
 
-	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model, requirementsCfg, cfg.Agent.MaxEngineers); err != nil {
+	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model, requirementsCfg, cfg.Agent.MaxEngineers, healthChecks); err != nil {
 		fatal(err.Error())
 	}
 }
@@ -703,6 +724,23 @@ func resolveRequirementsDoc(cfg Config) string {
 		return cfg.Requirements.Doc
 	}
 	return defaultRequirementsDoc
+}
+
+// resolveHealthChecks converts cfg's [[health_checks]] entries (TOML shape)
+// into []healthcheck.Check for the run_health_checks MCP tool (Issue #190).
+// Entries missing a name or command are skipped rather than passed through
+// as a broken check, since an empty Command would otherwise run `sh -c ""`
+// (a vacuous success) on every sweep.
+func resolveHealthChecks(cfg Config) []healthcheck.Check {
+	var checks []healthcheck.Check
+	for _, e := range cfg.HealthChecks {
+		if e.Name == "" || e.Command == "" {
+			log.Printf("health_checks: skipping entry with missing name or command: %+v", e)
+			continue
+		}
+		checks = append(checks, healthcheck.Check{Name: e.Name, Command: e.Command, Type: e.Type})
+	}
+	return checks
 }
 
 // runRequirementsSweep runs the requirements reconcile sweep (Issue #106) at

@@ -1165,3 +1165,84 @@ func TestResolveAnalystEffort_FallsBackToSuperintendentEffort(t *testing.T) {
 		t.Errorf("resolveAnalystEffort() = %q, want configured %q", got, "medium")
 	}
 }
+
+// --- health_checks (Issue #190) ---
+
+// TestLoadConfig_HealthChecks verifies that [[health_checks]] entries in
+// harness.toml are parsed into Config.HealthChecks.
+func TestLoadConfig_HealthChecks(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+
+[[health_checks]]
+name    = "api-health"
+command = "curl -sf https://example.com/healthz"
+
+[[health_checks]]
+name    = "db-health"
+command = "pg_isready"
+type    = "command"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if len(cfg.HealthChecks) != 2 {
+		t.Fatalf("expected 2 health_checks entries, got %d: %+v", len(cfg.HealthChecks), cfg.HealthChecks)
+	}
+	if cfg.HealthChecks[0].Name != "api-health" || cfg.HealthChecks[0].Command != "curl -sf https://example.com/healthz" {
+		t.Errorf("unexpected first health check: %+v", cfg.HealthChecks[0])
+	}
+	if cfg.HealthChecks[1].Name != "db-health" || cfg.HealthChecks[1].Type != "command" {
+		t.Errorf("unexpected second health check: %+v", cfg.HealthChecks[1])
+	}
+}
+
+// TestLoadConfig_HealthChecks_Omitted verifies that a project with no
+// [[health_checks]] section at all parses to a nil/empty slice — the
+// "unconfigured is a no-op" contract from Issue #190.
+func TestLoadConfig_HealthChecks_Omitted(t *testing.T) {
+	dir := t.TempDir()
+	content := `[github]
+owner = "owner"
+repo  = "repo"
+`
+	if err := os.WriteFile(filepath.Join(dir, "harness.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	cfg := loadConfig()
+	if len(cfg.HealthChecks) != 0 {
+		t.Errorf("expected no health_checks entries, got %+v", cfg.HealthChecks)
+	}
+	if got := resolveHealthChecks(cfg); len(got) != 0 {
+		t.Errorf("resolveHealthChecks() = %v, want empty", got)
+	}
+}
+
+// TestResolveHealthChecks_SkipsIncompleteEntries verifies that entries
+// missing a name or command are skipped rather than passed through as a
+// broken check (which would otherwise silently run `sh -c ""`, a vacuous
+// success, on every sweep).
+func TestResolveHealthChecks_SkipsIncompleteEntries(t *testing.T) {
+	cfg := Config{
+		HealthChecks: []HealthCheckEntry{
+			{Name: "good-check", Command: "exit 0"},
+			{Name: "", Command: "exit 0"},
+			{Name: "no-command", Command: ""},
+		},
+	}
+	got := resolveHealthChecks(cfg)
+	if len(got) != 1 || got[0].Name != "good-check" {
+		t.Errorf("resolveHealthChecks() = %+v, want only good-check", got)
+	}
+}

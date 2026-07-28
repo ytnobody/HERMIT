@@ -14,6 +14,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/ytnobody/hermit/internal/cihistory"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/healthcheck"
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/requirements"
@@ -120,8 +121,8 @@ func (m *mockGithubClient) GetPRStatusInRepo(_ int, _, _ string) (*gh.PRStatus, 
 	return m.prStatus, m.prStatusErr
 }
 
-func (m *mockGithubClient) PostComment(_ int, _ string) error {
-	return nil
+func (m *mockGithubClient) PostComment(number int, body string) error {
+	return m.PostCommentInRepo(number, body, "", "")
 }
 
 func (m *mockGithubClient) PostCommentInRepo(number int, body, owner, repo string) error {
@@ -174,6 +175,10 @@ func (m *mockGithubClient) GetIssueCommentsInRepo(number int, _ string, _, _ str
 	return m.issueCommentsByNumber[number], nil
 }
 
+func (m *mockGithubClient) AddLabel(number int, label string) error {
+	return m.AddLabelInRepo(number, label, "", "")
+}
+
 func (m *mockGithubClient) AddLabelInRepo(number int, label, owner, repo string) error {
 	if m.addLabelErr != nil {
 		return m.addLabelErr
@@ -218,7 +223,7 @@ func newTestServerWithTrigger(t *testing.T, client githubClient, trigger string)
 func newTestServerWithReadiness(t *testing.T, client githubClient, trigger string, readinessCfg readiness.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, trigger, readinessCfg, risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4, nil)
 	return s
 }
 
@@ -228,14 +233,14 @@ func newTestServerWithReadiness(t *testing.T, client githubClient, trigger strin
 func newTestServerWithRisk(t *testing.T, client githubClient, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{}, RequirementsConfig{}, 4)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), defaultRiskConfig, repoRiskConfigs, ModelConfig{}, RequirementsConfig{}, 4, nil)
 	return s
 }
 
 func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model, RequirementsConfig{}, 4)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, model, RequirementsConfig{}, 4, nil)
 	return s
 }
 
@@ -245,7 +250,7 @@ func newTestServerWithModel(t *testing.T, client githubClient, model ModelConfig
 func newTestServerWithMaxEngineers(t *testing.T, client githubClient, maxEngineers int) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, maxEngineers)
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, maxEngineers, nil)
 	return s
 }
 
@@ -255,7 +260,7 @@ func newTestServerWithRoot(t *testing.T, client githubClient) (*server.MCPServer
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4)
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4, nil)
 	return s, root
 }
 
@@ -266,8 +271,17 @@ func newTestServerWithRequirements(t *testing.T, client githubClient, requiremen
 	t.Helper()
 	root := t.TempDir()
 	s := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, requirementsCfg, 4)
+	registerTools(s, client, 0, root, "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, requirementsCfg, 4, nil)
 	return s, root
+}
+
+// newTestServerWithHealthChecks is like newTestServer but also wires a
+// []healthcheck.Check list for the run_health_checks MCP tool (Issue #190).
+func newTestServerWithHealthChecks(t *testing.T, client githubClient, checks []healthcheck.Check) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer("hermit-test", "0.0.0")
+	registerTools(s, client, 0, t.TempDir(), "hermit/issue-", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4, checks)
+	return s
 }
 
 func callTool(t *testing.T, s *server.MCPServer, name string, args map[string]any) *mcp.CallToolResult {
@@ -1798,5 +1812,142 @@ func TestRunRequirementsSweep_NoTestCommand_SkipsWithReason(t *testing.T) {
 	}
 	if len(mock.createdIssueTitles) != 0 {
 		t.Errorf("expected no issues to be opened when the sweep is skipped, got %v", mock.createdIssueTitles)
+	}
+}
+
+// --- run_health_checks (Issue #190) ---
+
+func TestRunHealthChecks_NoChecksConfigured_NoOp(t *testing.T) {
+	mock := &mockGithubClient{}
+	s := newTestServerWithHealthChecks(t, mock, nil)
+
+	got := mustToolJSON(t, callTool(t, s, "run_health_checks", map[string]any{}))
+
+	results, _ := got["results"].([]any)
+	if len(results) != 0 {
+		t.Errorf("expected empty results when no health_checks are configured, got %v", results)
+	}
+	if issuesOpened, _ := got["issues_opened"].(float64); issuesOpened != 0 {
+		t.Errorf("expected issues_opened=0, got %v", got["issues_opened"])
+	}
+	if len(mock.createdIssueTitles) != 0 {
+		t.Errorf("expected no issues created, got %v", mock.createdIssueTitles)
+	}
+}
+
+func TestRunHealthChecks_ReturnsNameOkOutputPerCheck(t *testing.T) {
+	mock := &mockGithubClient{}
+	checks := []healthcheck.Check{
+		{Name: "passing-check", Command: `echo "all good"; exit 0`},
+		{Name: "failing-check", Command: `echo "boom"; exit 1`},
+	}
+	s := newTestServerWithHealthChecks(t, mock, checks)
+
+	got := mustToolJSON(t, callTool(t, s, "run_health_checks", map[string]any{}))
+	results, _ := got["results"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d: %v", len(results), results)
+	}
+	first, _ := results[0].(map[string]any)
+	if first["name"] != "passing-check" || first["ok"] != true {
+		t.Errorf("results[0] = %v, want name=passing-check ok=true", first)
+	}
+	if out, _ := first["output"].(string); !strings.Contains(out, "all good") {
+		t.Errorf("results[0].output = %q, want it to contain %q", out, "all good")
+	}
+	second, _ := results[1].(map[string]any)
+	if second["name"] != "failing-check" || second["ok"] != false {
+		t.Errorf("results[1] = %v, want name=failing-check ok=false", second)
+	}
+}
+
+func TestRunHealthChecks_FailingCheck_NoExistingIssue_OpensProductionIncidentIssue(t *testing.T) {
+	mock := &mockGithubClient{}
+	checks := []healthcheck.Check{{Name: "api-health", Command: `echo "connection refused"; exit 1`}}
+	s := newTestServerWithHealthChecks(t, mock, checks)
+
+	got := mustToolJSON(t, callTool(t, s, "run_health_checks", map[string]any{}))
+	if issuesOpened, _ := got["issues_opened"].(float64); issuesOpened != 1 {
+		t.Fatalf("expected issues_opened=1, got %v (full: %v)", got["issues_opened"], got)
+	}
+	if len(mock.createdIssueTitles) != 1 {
+		t.Fatalf("expected exactly one issue to be created, got %d: %v", len(mock.createdIssueTitles), mock.createdIssueTitles)
+	}
+	title := mock.createdIssueTitles[0]
+	if !strings.Contains(title, healthcheck.TitlePrefix("api-health")) {
+		t.Errorf("created issue title = %q, want it to contain %q", title, healthcheck.TitlePrefix("api-health"))
+	}
+	if len(mock.addedLabels) != 1 || mock.addedLabels[0].label != healthcheck.IncidentLabel {
+		t.Errorf("addedLabels = %v, want a single %q label", mock.addedLabels, healthcheck.IncidentLabel)
+	}
+}
+
+func TestRunHealthChecks_FailingCheck_ExistingOpenIssue_NoDuplicate(t *testing.T) {
+	mock := &mockGithubClient{
+		issues: []gh.Issue{
+			{Number: 5, Title: healthcheck.TitlePrefix("api-health") + " health check failing"},
+		},
+	}
+	checks := []healthcheck.Check{{Name: "api-health", Command: "exit 1"}}
+	s := newTestServerWithHealthChecks(t, mock, checks)
+
+	got := mustToolJSON(t, callTool(t, s, "run_health_checks", map[string]any{}))
+	if issuesOpened, _ := got["issues_opened"].(float64); issuesOpened != 0 {
+		t.Errorf("expected issues_opened=0 (should dedupe against existing open issue), got %v", got["issues_opened"])
+	}
+	if len(mock.createdIssueTitles) != 0 {
+		t.Errorf("expected no duplicate issue to be created, got %v", mock.createdIssueTitles)
+	}
+}
+
+func TestRunHealthChecks_RecoveredCheck_PostsOneTimeComment(t *testing.T) {
+	mock := &mockGithubClient{
+		issues: []gh.Issue{
+			{Number: 5, Title: healthcheck.TitlePrefix("api-health") + " health check failing"},
+		},
+	}
+	checks := []healthcheck.Check{{Name: "api-health", Command: "exit 0"}}
+	s := newTestServerWithHealthChecks(t, mock, checks)
+
+	got := mustToolJSON(t, callTool(t, s, "run_health_checks", map[string]any{}))
+	if recovered, _ := got["recovered_comments"].(float64); recovered != 1 {
+		t.Fatalf("expected recovered_comments=1, got %v (full: %v)", got["recovered_comments"], got)
+	}
+	if len(mock.postedComments) != 1 || mock.postedComments[0].number != 5 {
+		t.Fatalf("expected one recovered comment posted on issue #5, got %+v", mock.postedComments)
+	}
+	if !strings.Contains(mock.postedComments[0].body, healthcheck.RecoveredTrigger) {
+		t.Errorf("recovered comment body = %q, want it to contain %q", mock.postedComments[0].body, healthcheck.RecoveredTrigger)
+	}
+
+	// The issue itself must never be closed by run_health_checks — verify no
+	// close-issue side channel was exercised by re-running with the same
+	// mock state (still "open" from the test's perspective) and confirming
+	// the comment is now suppressed as already-posted, not re-created via
+	// some auto-close/reopen path.
+	mock.commentMatchByIssue = map[int]bool{5: true}
+	got2 := mustToolJSON(t, callTool(t, s, "run_health_checks", map[string]any{}))
+	if recovered, _ := got2["recovered_comments"].(float64); recovered != 0 {
+		t.Errorf("expected recovered_comments=0 on second call (already posted), got %v", got2["recovered_comments"])
+	}
+	if len(mock.postedComments) != 1 {
+		t.Errorf("expected no additional recovered comment posted, got %+v", mock.postedComments)
+	}
+}
+
+func TestRunHealthChecks_PassingCheck_NoExistingIssue_NoOp(t *testing.T) {
+	mock := &mockGithubClient{}
+	checks := []healthcheck.Check{{Name: "api-health", Command: "exit 0"}}
+	s := newTestServerWithHealthChecks(t, mock, checks)
+
+	got := mustToolJSON(t, callTool(t, s, "run_health_checks", map[string]any{}))
+	if issuesOpened, _ := got["issues_opened"].(float64); issuesOpened != 0 {
+		t.Errorf("expected issues_opened=0, got %v", got["issues_opened"])
+	}
+	if recovered, _ := got["recovered_comments"].(float64); recovered != 0 {
+		t.Errorf("expected recovered_comments=0 (no issue to comment on), got %v", got["recovered_comments"])
+	}
+	if len(mock.createdIssueTitles) != 0 || len(mock.postedComments) != 0 {
+		t.Errorf("expected no side effects, got created=%v posted=%v", mock.createdIssueTitles, mock.postedComments)
 	}
 }

@@ -275,7 +275,7 @@ func checkCreateWorktreeOutput(t *testing.T, _ *server.MCPServer) map[string]any
 	t.Chdir(repo)
 
 	srv := server.NewMCPServer("hermit-test", "0.0.0")
-	registerTools(srv, &mockGithubClient{}, 0, t.TempDir(), "req002schema/gh-test", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4)
+	registerTools(srv, &mockGithubClient{}, 0, t.TempDir(), "req002schema/gh-test", 120, "", "", nil, "", readiness.DefaultConfig(), risk.DefaultConfig(), nil, ModelConfig{}, RequirementsConfig{}, 4, nil)
 
 	got := mustToolJSON(t, callTool(t, srv, "create_worktree", map[string]any{
 		"issue_number": float64(163),

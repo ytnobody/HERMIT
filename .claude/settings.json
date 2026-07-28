@@ -40,7 +40,8 @@
       "mcp__hermit__run_requirements_sweep",
       "mcp__hermit__now",
       "mcp__hermit__get_loop_state",
-      "mcp__hermit__update_loop_state"
+      "mcp__hermit__update_loop_state",
+      "mcp__hermit__run_health_checks"
     ]
   }
 }
