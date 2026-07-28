@@ -114,6 +114,101 @@ func TestParse_HashChangesWithText(t *testing.T) {
 	}
 }
 
+// TestParse_HashUnaffectedByImplementationStatusField is the regression test
+// for Issue #182: hashing the whole requirement block (including a
+// "- 実装状況:" progress-note field) meant that *resolving* a review-test
+// issue — which involves writing findings into 実装状況 — changed the
+// block's hash, which made the next sweep think the requirement text had
+// changed again, re-opening review-test forever. The hash must depend only
+// on 受け入れ条件 and verify, not on 実装状況.
+func TestParse_HashUnaffectedByImplementationStatusField(t *testing.T) {
+	before := `# 要件定義書
+
+## REQ-200: 自己増殖しない要件
+- 受け入れ条件: review-test が自己増殖しないこと
+- verify: test
+`
+	reqsBefore, err := Parse(before)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	// Simulate resolving a review-test issue: an engineer/human appends an
+	// "- 実装状況:" progress note to the block, without touching the
+	// acceptance criteria or verify mode at all.
+	after := `# 要件定義書
+
+## REQ-200: 自己増殖しない要件
+- 受け入れ条件: review-test が自己増殖しないこと
+- verify: test
+- 実装状況: #182 で調査済み。テストは要件を正しく検証している。
+`
+	reqsAfter, err := Parse(after)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if reqsBefore[0].Hash != reqsAfter[0].Hash {
+		t.Errorf("hash changed after only 実装状況 was added: before=%q after=%q — this is the #182 self-reinforcing loop",
+			reqsBefore[0].Hash, reqsAfter[0].Hash)
+	}
+}
+
+// TestParse_HashUnaffectedByTitleOrDescriptionOnly covers the acceptance
+// criterion that editing only the requirement heading text or free-form
+// description prose (neither 受け入れ条件 nor verify) must not change Hash.
+func TestParse_HashUnaffectedByTitleOrDescriptionOnly(t *testing.T) {
+	before := `## REQ-201: 元のタイトル
+補足説明の文章です。
+
+- 受け入れ条件: 変わらない条件
+- verify: test
+`
+	after := `## REQ-201: 書き直したタイトル
+補足説明の文章を書き直しました。もっと詳しく説明します。
+
+- 受け入れ条件: 変わらない条件
+- verify: test
+`
+	reqsBefore, err := Parse(before)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	reqsAfter, err := Parse(after)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if reqsBefore[0].Hash != reqsAfter[0].Hash {
+		t.Errorf("hash changed after only title/description prose changed: before=%q after=%q",
+			reqsBefore[0].Hash, reqsAfter[0].Hash)
+	}
+}
+
+// TestParse_HashChangesWithVerifyMode covers the acceptance criterion that
+// switching verify: test <-> manual must still change Hash, since that's a
+// genuine change to how the requirement is judged.
+func TestParse_HashChangesWithVerifyMode(t *testing.T) {
+	testDoc := `## REQ-202: verify 切り替え
+- 受け入れ条件: 同じ条件文
+- verify: test
+`
+	manualDoc := `## REQ-202: verify 切り替え
+- 受け入れ条件: 同じ条件文
+- verify: manual
+`
+	reqsTest, err := Parse(testDoc)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	reqsManual, err := Parse(manualDoc)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if reqsTest[0].Hash == reqsManual[0].Hash {
+		t.Errorf("hash should change when verify mode changes between test and manual")
+	}
+}
+
 func TestParse_CRLFNormalized(t *testing.T) {
 	crlfDoc := strings.ReplaceAll(sampleDoc, "\n", "\r\n")
 	reqsLF, _ := Parse(sampleDoc)

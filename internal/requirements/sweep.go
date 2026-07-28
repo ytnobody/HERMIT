@@ -54,13 +54,23 @@ type SweepOptions struct {
 // Sweep is safe to call repeatedly against an unchanged requirements doc and
 // unchanged test results: it will not create duplicate issues.
 func Sweep(reqs []Requirement, opts SweepOptions) ([]ReqResult, error) {
-	prevHashes, err := opts.Hashes.Load()
+	prevVersion, prevHashes, err := opts.Hashes.Load()
 	if err != nil {
 		return nil, fmt.Errorf("loading requirement hashes: %w", err)
 	}
 	if prevHashes == nil {
 		prevHashes = map[string]string{}
 	}
+
+	// schemeChanged is true when the stored hashes were computed under a
+	// different (or no prior) HashSchemeVersion. In that case the raw hash
+	// values are not comparable to the ones we're about to compute — every
+	// requirement would spuriously look "changed" even if its spec is
+	// identical. Per Issue #182's migration requirement, treat this as "no
+	// change" for review-test purposes on this one sweep: just recompute
+	// and persist hashes under the current scheme, without opening any
+	// review-test issues.
+	schemeChanged := prevVersion != HashSchemeVersion
 
 	newHashes := make(map[string]string, len(prevHashes))
 	// Preserve hashes for requirements not present in this sweep (e.g. a doc
@@ -71,13 +81,14 @@ func Sweep(reqs []Requirement, opts SweepOptions) ([]ReqResult, error) {
 
 	var results []ReqResult
 	for _, req := range reqs {
-		if req.Verify == VerifyManual {
-			results = append(results, ReqResult{ReqID: req.ID, Title: req.Title, Status: Skipped})
-			continue
-		}
-
+		// Hash comparison (and the resulting review-test issue) happens
+		// before the verify:manual short-circuit below, so that a
+		// requirement's verify mode flipping between test and manual — a
+		// genuine spec change that specHash captures — still triggers
+		// review-test even though the requirement isn't otherwise judged by
+		// running a test.
 		oldHash, hadHash := prevHashes[req.ID]
-		hashChanged := hadHash && oldHash != req.Hash
+		hashChanged := !schemeChanged && hadHash && oldHash != req.Hash
 		newHashes[req.ID] = req.Hash
 
 		result := ReqResult{ReqID: req.ID, Title: req.Title, HashChanged: hashChanged}
@@ -93,6 +104,12 @@ func Sweep(reqs []Requirement, opts SweepOptions) ([]ReqResult, error) {
 				result.IssueCreated = true
 				result.IssueKind = KindReviewTest
 			}
+		}
+
+		if req.Verify == VerifyManual {
+			result.Status = Skipped
+			results = append(results, result)
+			continue
 		}
 
 		status, output, runErr := opts.Runner.Run(req.ID)
@@ -133,7 +150,7 @@ func Sweep(reqs []Requirement, opts SweepOptions) ([]ReqResult, error) {
 		results = append(results, result)
 	}
 
-	if err := opts.Hashes.Save(newHashes); err != nil {
+	if err := opts.Hashes.Save(HashSchemeVersion, newHashes); err != nil {
 		return nil, fmt.Errorf("saving requirement hashes: %w", err)
 	}
 

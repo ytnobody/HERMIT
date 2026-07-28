@@ -41,10 +41,24 @@ type Requirement struct {
 	// Verify is "test" (default) or "manual".
 	Verify VerifyMode
 	// Body is the full raw text of this requirement's block (header plus
-	// fields), used to compute Hash.
+	// fields). It is kept for diagnostics/issue bodies, but is deliberately
+	// NOT used to compute Hash (see Hash's doc comment).
 	Body string
-	// Hash is a stable content hash of Body, used to detect requirement-text
+	// Hash is a stable content hash of only the spec-bearing fields
+	// (AcceptanceCriteria and Verify), used to detect requirement-*spec*
 	// changes across sweeps (e.g. to trigger a "review the test" issue).
+	//
+	// It deliberately excludes the rest of Body — most notably a
+	// "- 実装状況:" (implementation status) progress-note field, which the
+	// review-test workflow itself writes into when a human/engineer resolves
+	// a review-test issue. Hashing the whole block created a self-sustaining
+	// loop (Issue #182): resolving a review-test issue edited the
+	// 実装状況 line, which changed Body's hash, which made the next sweep
+	// think the requirement text had changed again, which re-opened
+	// review-test forever — even though the actual spec (acceptance
+	// criteria / verify mode) never changed. Also excludes the header
+	// title and any free-form description text, so wording-only edits to
+	// those don't spuriously trigger review-test either.
 	Hash string
 }
 
@@ -115,15 +129,18 @@ func Parse(doc string) ([]Requirement, error) {
 			AcceptanceCriteria: criteria,
 			Verify:             verify,
 			Body:               block,
-			Hash:               hashText(block),
 		})
+		reqs[len(reqs)-1].Hash = specHash(reqs[len(reqs)-1])
 	}
 	return reqs, nil
 }
 
-// hashText returns a stable hex-encoded sha256 hash of s, used to detect
-// requirement-text changes between sweeps.
-func hashText(s string) string {
+// specHash returns a stable hex-encoded sha256 hash of just the spec-bearing
+// fields of req (AcceptanceCriteria and Verify) — see Requirement.Hash for
+// why the rest of the block (title, description, 実装状況 progress notes,
+// etc.) must NOT be included.
+func specHash(req Requirement) string {
+	s := "verify:" + string(req.Verify) + "\n" + "criteria:" + req.AcceptanceCriteria
 	sum := sha256.Sum256([]byte(strings.TrimSpace(s)))
 	return hex.EncodeToString(sum[:])
 }
