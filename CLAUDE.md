@@ -43,15 +43,20 @@ Because this cycle now runs with the full tool access of the invoking context (n
 7. Run the requirements reconcile sweep roughly once an hour using `run_requirements_sweep`, tracking a separate "last requirements-sweep time" across passes the same way step 5 tracks its own PR-comment-check "since" timestamp (store the current time before calling):
    - Only call `run_requirements_sweep` when at least 3600 seconds have elapsed since the last recorded sweep time; otherwise skip this step for the current pass (do not call the tool early — it runs the configured `test_command` for every requirement and shouldn't be wasted on sub-hourly passes)
    - Update the stored last-sweep timestamp to now after calling
-8. If there are no Issues, end this pass — the recurring cron trigger starts the next pass
-9. For each Issue (up to 4 at a time):
-   a. Mark as in-progress with `assign_issue` (assignee: your own username)
-   b. Create a worktree with `create_worktree` (base_branch: default branch)
-10. **Spawn all Engineers for the Issues prepared in step 9 in parallel at once using the Agent tool** (`run_in_background: true`, so this inline pass can wait for them without blocking on each one sequentially)
+8. Run the production health-check sweep roughly every 5 minutes using `run_health_checks` (Issue #190), tracking a separate "last health-check time" across passes (`health_checks_since`) the same way step 7 tracks its own requirements-sweep timestamp:
+   - Only call `run_health_checks` when at least 300 seconds have elapsed since the last recorded health-check time; otherwise skip this step for the current pass
+   - `run_health_checks` itself runs each configured `[[health_checks]]` command, opens a deduped `production-incident`-labeled Issue for any newly-failing check, and posts a one-time "recovered at ..." comment on the corresponding Issue for any check that has returned to passing (never auto-closing it) — no further action is needed here beyond calling the tool and updating the timestamp
+   - Update the stored last-health-check timestamp to now after calling
+   - If no `[[health_checks]]` are configured for this project, the tool is a no-op; keep calling it on cadence anyway rather than special-casing it away, so a project that later adds health checks starts getting swept without a CLAUDE.md change
+9. If there are no Issues, end this pass — the recurring cron trigger starts the next pass
+10. For each Issue (up to 4 at a time):
+    a. Mark as in-progress with `assign_issue` (assignee: your own username)
+    b. Create a worktree with `create_worktree` (base_branch: default branch)
+11. **Spawn all Engineers for the Issues prepared in step 10 in parallel at once using the Agent tool** (`run_in_background: true`, so this inline pass can wait for them without blocking on each one sequentially)
     - Information to pass to each Engineer: Issue number, title, body, `worktree_path` and `branch` returned by `create_worktree`
     - If the parallel count exceeds 4, process the first 4 and defer the rest to the next pass
-11. Wait for all Engineers to complete
-12. Run `check_ci_status` on the PR for each Issue (including PRs from Engineers spawned on an earlier pass that are still awaiting evaluation — use `list_prs` to find open HERMIT PRs)
+12. Wait for all Engineers to complete
+13. Run `check_ci_status` on the PR for each Issue (including PRs from Engineers spawned on an earlier pass that are still awaiting evaluation — use `list_prs` to find open HERMIT PRs)
     - If CI is failing: the tool automatically posts an investigation comment listing the failing checks; skip merging and wait for fixes
     - If CI is passing: run `evaluate_risk`
       - LOW / MEDIUM: run `merge_pr` with `worktree_path` and `branch` so the worktree is cleaned up automatically after a successful merge
@@ -61,7 +66,7 @@ Because this cycle now runs with the full tool access of the invoking context (n
         - Check whether the branch is stale relative to the base branch in a way that could hide semantic conflicts, not just textual `mergeable` conflicts
         - Post your findings as a separate PR comment via `add_issue_comment`: a short summary of what changed, anything concerning, and an explicit recommendation (e.g. "looks safe to merge pending approval" vs. "found X, should be fixed first")
         - Skip merging and wait for a human decision
-13. End the pass with a short report of what was done, and return control to the prompt — do **not** loop back to step 1 yourself; the recurring cron job fires the next pass
+14. End the pass with a short report of what was done, and return control to the prompt — do **not** loop back to step 1 yourself; the recurring cron job fires the next pass
 
 ---
 

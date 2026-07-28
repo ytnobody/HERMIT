@@ -12,6 +12,7 @@ import (
 	"github.com/ytnobody/hermit/internal/cihistory"
 	"github.com/ytnobody/hermit/internal/git"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/healthcheck"
 	"github.com/ytnobody/hermit/internal/lessons"
 	"github.com/ytnobody/hermit/internal/notification"
 	"github.com/ytnobody/hermit/internal/readiness"
@@ -54,6 +55,11 @@ type githubClient interface {
 	// requirements.NewGitHubIssueClient — see requirements.ghClient, which
 	// this interface must remain a superset of.
 	CreateIssue(title, body string) (int, error)
+	// AddLabel is used by the run_health_checks tool to label newly-opened
+	// production-incident issues via healthcheck.NewGitHubIssueClient — see
+	// healthcheck.ghClient, which this interface must remain a superset of
+	// (Issue #190).
+	AddLabel(number int, label string) error
 }
 
 // resolveRiskConfig returns the risk.Config to apply for the given owner/repo
@@ -71,7 +77,7 @@ func resolveRiskConfig(owner, repo string, defaultRiskConfig risk.Config, repoRi
 	return defaultRiskConfig
 }
 
-func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig, maxEngineers int) {
+func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig, maxEngineers int, healthChecks []healthcheck.Check) {
 	s.AddTool(
 		mcp.NewTool("get_default_branch",
 			mcp.WithDescription("リポジトリのデフォルトブランチ名を返す"),
@@ -554,7 +560,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("get_loop_state",
-			mcp.WithDescription("Returns the cadence-tracking timestamps persisted in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, and requirements_sweep_since (RFC3339, omitted if never recorded) — the 'since' values the Superintendent cycle uses to decide when it last checked PR comments, checked Issue comments, and ran the requirements sweep. Also reports last_success_tick and consecutive_failures, written by `hermit run`'s own tick loop. This file is owned by HERMIT's Go side: read/write the three cadence timestamps only via this tool and update_loop_state, never by hand-writing the JSON file."),
+			mcp.WithDescription("Returns the cadence-tracking timestamps persisted in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, and health_checks_since (RFC3339, omitted if never recorded) — the 'since' values the Superintendent cycle uses to decide when it last checked PR comments, checked Issue comments, ran the requirements sweep, and ran the health-check sweep. Also reports last_success_tick and consecutive_failures, written by `hermit run`'s own tick loop. This file is owned by HERMIT's Go side: read/write these cadence timestamps only via this tool and update_loop_state, never by hand-writing the JSON file."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			st, err := state.Load(state.Path(rootDir))
@@ -568,10 +574,11 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("update_loop_state",
-			mcp.WithDescription("Updates one or more of the cadence-tracking timestamps in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, each an RFC3339 timestamp. Only the fields provided are changed; omitted fields are left as-is. Call the now tool first to get an authoritative current timestamp to pass in, then use this instead of writing the JSON file directly. Returns the full updated state."),
+			mcp.WithDescription("Updates one or more of the cadence-tracking timestamps in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, health_checks_since, each an RFC3339 timestamp. Only the fields provided are changed; omitted fields are left as-is. Call the now tool first to get an authoritative current timestamp to pass in, then use this instead of writing the JSON file directly. Returns the full updated state."),
 			mcp.WithString("pr_comments_since", mcp.Description("RFC3339 timestamp to record as the last PR-review-comment check time")),
 			mcp.WithString("issue_comments_since", mcp.Description("RFC3339 timestamp to record as the last Issue-comment check time")),
 			mcp.WithString("requirements_sweep_since", mcp.Description("RFC3339 timestamp to record as the last requirements-sweep time")),
+			mcp.WithString("health_checks_since", mcp.Description("RFC3339 timestamp to record as the last health-check sweep time")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			statePath := state.Path(rootDir)
@@ -599,6 +606,13 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 					return mcp.NewToolResultError(fmt.Sprintf("requirements_sweep_since: %v", err)), nil
 				}
 				st.RequirementsSweepSince = &t
+			}
+			if v := req.GetString("health_checks_since", ""); v != "" {
+				t, err := time.Parse(time.RFC3339, v)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("health_checks_since: %v", err)), nil
+				}
+				st.HealthChecksSince = &t
 			}
 			if err := state.Save(statePath, st); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
@@ -757,6 +771,36 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
+
+	s.AddTool(
+		mcp.NewTool("run_health_checks",
+			mcp.WithDescription("Runs the production health checks configured under [[health_checks]] in harness.toml (Issue #190): executes each check's command (30s timeout) and returns {name, ok, output} for each. For any failing check (ok:false) with no existing open GitHub issue (matched by an \"[health-check: <name>]\" title prefix), opens a new issue labeled production-incident containing the check name, command, output, and detection time — deduped so a check that is still failing does not open a second issue. For any check that has returned to passing (ok:true) while a matching open issue exists, posts a one-time \"recovered at <time>\" comment on that issue (never auto-closes it). No-ops when no health_checks are configured (returns an empty results list), so unconfigured projects see no change in behavior. The Superintendent loop should call this roughly every 5 minutes (tracking its own \"last health-check\" timestamp via health_checks_since, the same way it tracks requirements_sweep_since), not on every cycle."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if len(healthChecks) == 0 {
+				b, _ := json.Marshal(map[string]any{
+					"results":            []healthcheck.Result{},
+					"issues_opened":      0,
+					"recovered_comments": 0,
+				})
+				return mcp.NewToolResultText(string(b)), nil
+			}
+			results := healthcheck.RunChecks(healthChecks)
+			summary, err := healthcheck.Reconcile(healthChecks, results, healthcheck.NewGitHubIssueClient(client), time.Now())
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, err := json.Marshal(map[string]any{
+				"results":            summary.Results,
+				"issues_opened":      summary.IssuesOpened,
+				"recovered_comments": summary.RecoveredComments,
+			})
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
 }
 
 // loopStateResponse converts a state.LoopState into the JSON-friendly shape
@@ -775,6 +819,7 @@ func loopStateResponse(st state.LoopState) map[string]any {
 	setIfNotNil("pr_comments_since", st.PRCommentsSince)
 	setIfNotNil("issue_comments_since", st.IssueCommentsSince)
 	setIfNotNil("requirements_sweep_since", st.RequirementsSweepSince)
+	setIfNotNil("health_checks_since", st.HealthChecksSince)
 	setIfNotNil("last_success_tick", st.LastSuccessTick)
 	return resp
 }

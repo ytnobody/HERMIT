@@ -79,3 +79,18 @@ analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/
 
 # [run]
 # failure_notify_threshold = 3  # `hermit run`: consecutive failed passes before a [notification] webhook fires (default: 3)
+
+# [[health_checks]]
+# # Production health checks run periodically by the run_health_checks MCP
+# # tool (Issue #190). Each entry's command is run with a 30s timeout; exit
+# # code 0 means healthy. A failing check with no existing open issue opens
+# # one labeled "production-incident" (deduped by an "[health-check: <name>]"
+# # title prefix); a check that recovers gets a one-time "recovered at ..."
+# # comment on that issue (it is never auto-closed). Omitting this section
+# # entirely (the default) means run_health_checks is a no-op.
+# name    = "api-health"
+# command = "curl -sf https://example.com/healthz"
+# # type: only "command" is supported today (default when omitted); other
+# # values are reserved for future check mechanisms (e.g. "http") and are
+# # skipped if set to anything else.
+# type    = "command"

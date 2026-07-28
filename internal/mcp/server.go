@@ -3,6 +3,7 @@ package mcp
 import (
 	"github.com/mark3labs/mcp-go/server"
 	gh "github.com/ytnobody/hermit/internal/github"
+	"github.com/ytnobody/hermit/internal/healthcheck"
 	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/risk"
 )
@@ -43,9 +44,13 @@ type RequirementsConfig struct {
 // [agent].max_engineers value from harness.toml (REQ-011): the maximum
 // number of Engineers the Superintendent spawns in parallel per pass. It is
 // surfaced read-only via get_config so the Superintendent can reference the
-// configured value instead of a hardcoded number.
-func Serve(client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig, maxEngineers int) error {
+// configured value instead of a hardcoded number. healthChecks is the
+// resolved [[health_checks]] list from harness.toml used by the
+// run_health_checks MCP tool (Issue #190); an empty/nil slice means the
+// project has not configured any production health checks, in which case
+// run_health_checks is a no-op.
+func Serve(client *gh.Client, rateLimitThreshold int, rootDir string, branchPrefix string, loopInterval int, webhookURL string, webhookType string, repos []gh.RepoConfig, triggerComment string, readinessCfg readiness.Config, defaultRiskConfig risk.Config, repoRiskConfigs map[string]risk.Config, model ModelConfig, requirementsCfg RequirementsConfig, maxEngineers int, healthChecks []healthcheck.Check) error {
 	s := server.NewMCPServer("hermit", "1.0.0")
-	registerTools(s, client, rateLimitThreshold, rootDir, branchPrefix, loopInterval, webhookURL, webhookType, repos, triggerComment, readinessCfg, defaultRiskConfig, repoRiskConfigs, model, requirementsCfg, maxEngineers)
+	registerTools(s, client, rateLimitThreshold, rootDir, branchPrefix, loopInterval, webhookURL, webhookType, repos, triggerComment, readinessCfg, defaultRiskConfig, repoRiskConfigs, model, requirementsCfg, maxEngineers, healthChecks)
 	return server.ServeStdio(s)
 }
