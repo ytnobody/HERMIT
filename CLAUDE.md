@@ -25,6 +25,15 @@ Because this cycle now runs with the full tool access of the invoking context (n
 
 **Hard prohibition:** this cycle is a coordinator, not an implementer. Do not use `Edit`, `Write`, `NotebookEdit`, or shell commands that mutate tracked files (including inside a worktree created in step 8) to change this repository's code, docs, or config while acting as Superintendent. All implementation work — even a one-line fix, even when it looks faster to do it yourself — belongs exclusively to the Engineer role, spawned in step 9. If this cycle finds itself about to open a file for editing anywhere under a `worktree_path`, or to run a code-writing command against one, that is a signal it has drifted out of role and must stop.
 
+### MCP tool-resolution check (run before step 1, every pass)
+
+Before doing anything else in a pass, confirm the `mcp__hermit__*` tools this cycle depends on are actually resolvable and callable in the current session: call one cheap, read-only tool such as `mcp__hermit__now` or `mcp__hermit__get_config`.
+
+- If it resolves and returns successfully, proceed to step 1 as normal — no further action needed.
+- If it is missing (not found via `ToolSearch`, not present in the available tool set) or the call fails/errors, **stop the pass immediately**: do not proceed to step 1 or any later step, since the cycle cannot safely retrieve or act on Issues without these tools. State the failure explicitly and clearly in the pass's final report (e.g. "MCP tool-resolution check failed: `mcp__hermit__now` did not resolve/errored — skipping this pass") so a human notices instead of the cycle silently doing nothing. Do not retry in a loop within the same pass; let the next cron-triggered `/hermit` invocation attempt the check again in a fresh session.
+
+This check is nearly free (one read-only call) and guards against a known flaky failure mode where `mcp__hermit__*` tool resolution silently fails for a given session/subagent even though `claude mcp list` reports the server connected — see the troubleshooting note at the end of this file (background: Issue #166). Because the Superintendent cycle now runs inline in the invoking session rather than via a dedicated subagent (see below, re: Issue #171), this specific failure mode is less likely to hit the Superintendent pass itself than when it was first reported — but the check is cheap enough to keep as a safety net, and it still matters for the Engineer role, which does spawn background subagents (step 10 below). If an Engineer reports that its `mcp__hermit__*`/git/gh tools would not resolve, treat that as the same class of failure: it should say so explicitly in its report rather than silently stalling.
+
 ### Superintendent cycle (one pass, run inline on every `/hermit` invocation)
 
 1. Ensure the cycle keeps triggering on its own, without depending on the model remembering to do so: call `CronList` to check whether a recurring job invoking `/hermit` (or this cycle) is already scheduled.
@@ -81,3 +90,20 @@ Follow the Human Input Policy above: do not use `AskUserQuestion`, `EnterPlanMod
 ### Coding Guidelines
 
 Describe your project-specific coding guidelines here.
+
+---
+
+## Troubleshooting: `mcp__hermit__*` tools unresolvable (Issue #166)
+
+Symptom: a pass (or an Engineer subagent) is unable to call any `mcp__hermit__*` tool — `ToolSearch` returns "No matching deferred tools found" for queries like `select:mcp__hermit__list_issues,mcp__hermit__get_config`, or `ToolSearch` itself is absent from the tool set, even though `claude mcp list` reports `hermit: ... - ✔ Connected`. When this happens, the affected pass cannot get past retrieving Issues (step 4) or otherwise act on `mcp__hermit__*` data, and — before the MCP tool-resolution check above existed — would silently do nothing instead of reporting the problem.
+
+Observed pattern (from Issue #166's original report): this was seen across three consecutive Superintendent **subagent** invocations — one correctly stopped early on `.hermit-quit`, but the next two failed to resolve `mcp__hermit__*` tools (and in the third, `ToolSearch` itself was missing), despite an unchanged MCP server connection state. This points to session/subagent-scoped tool-resolution flakiness in the Claude Code harness itself (timing of MCP handshake vs. tool-list construction for a spawned subagent, `ToolSearch` index propagation delay, or similar) rather than anything wrong with the `hermit` MCP server or this repo's configuration. Fixing that harness-level behavior is out of scope for this repo (see acceptance criteria for #166); the mitigation here is detection and reporting, not a root-cause fix.
+
+Relevant context: as of the fix for Issue #171, the Superintendent cycle runs inline in the invoking session rather than via a dedicated `superintendent` subagent, so the exact reproduction path from #166 (a spawned Superintendent subagent losing tool resolution) is less likely to recur for the Superintendent role specifically. The same class of flakiness could still affect: (a) the top-level session itself, if MCP tool resolution regresses generally, or (b) Engineer subagents, which are still spawned per-Issue in step 10 of the cycle above.
+
+If you suspect this is recurring:
+
+1. Reproduce: run `/hermit` (or trigger the cycle) and watch whether it stalls before completing step 4 (`list_issues`) — the MCP tool-resolution check above should now catch this and say so explicitly in the pass report, rather than the pass silently ending with no visible error.
+2. Confirm server-side connectivity is not the cause: run `claude mcp list` and check the `hermit` entry shows `✔ Connected`. If it does, the problem is tool-resolution/propagation into the current session or subagent, not the server being down.
+3. Check tool availability directly: try `ToolSearch` with `select:mcp__hermit__now` (or another cheap tool). If `ToolSearch` itself is unavailable, or returns "No matching deferred tools found" for a `mcp__hermit__*` selector while the server is connected, that confirms this failure mode.
+4. If reproduced, file (or comment on) a GitHub Issue with: which invocation path was used (inline session vs. a spawned subagent, e.g. an Engineer), the exact `ToolSearch` query and result, and the `claude mcp list` output — this is the information needed to escalate to the Claude Code harness team, since the fix lives outside this repo.
