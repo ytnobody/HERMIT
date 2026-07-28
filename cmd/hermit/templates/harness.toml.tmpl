@@ -41,6 +41,16 @@ analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/
 # skip_acceptance_criteria_check  = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
 # label                           = "needs-clarification"  # label applied to Issues judged not ready; also excludes them from list_issues
 
+# [security]
+# # Allowlist of GitHub "author_association" values whose Issues are surfaced
+# # by list_issues. Since HERMIT runs unattended with broad local tool access
+# # and public repos accept Issues from anyone, an Issue from an untrusted
+# # author must never reach the loop as an implicit instruction. Omitting this
+# # section (or leaving it empty) is NOT "allow everyone" — it falls back to
+# # the same safe default shown below. Excluded Issues are logged (not
+# # silently dropped) so a human operator can notice.
+# trusted_author_associations = ["OWNER", "MEMBER", "COLLABORATOR"]  # default shown; other possible values: "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE"
+
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook
 # type        = "slack"  # "slack" | "discord" | "generic" (auto-detected from URL if omitted)

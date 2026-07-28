@@ -17,6 +17,7 @@ func cmdDryRun() {
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
+	client.SetTrustedAuthorAssociations(cfg.Security.TrustedAuthorAssociations)
 	prefix := resolveBranchPrefix(cfg)
 
 	fmt.Println("Dry-run mode: showing what would happen")

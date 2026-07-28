@@ -158,6 +158,21 @@ type Config struct {
 		// needing to opt in.
 		Paths []string `toml:"paths"`
 	} `toml:"requirements"`
+	Security struct {
+		// TrustedAuthorAssociations is the allowlist of GitHub
+		// "author_association" values (e.g. "OWNER", "MEMBER",
+		// "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE")
+		// whose Issues are surfaced by list_issues. HERMIT runs unattended
+		// with broad local tool access, and public repos accept Issues from
+		// anyone, so an Issue from an untrusted author must never reach the
+		// loop as an implicit instruction (Issue #178).
+		//
+		// Default when empty/omitted: falls back to
+		// gh.DefaultTrustedAuthorAssociations ("OWNER", "MEMBER",
+		// "COLLABORATOR") — a missing [security] section is NOT a no-op /
+		// "allow everyone" fallback; it resolves to this same safe default.
+		TrustedAuthorAssociations []string `toml:"trusted_author_associations"`
+	} `toml:"security"`
 }
 
 // resolveRiskConfig builds the effective default risk.Config (harness.toml's
@@ -471,6 +486,7 @@ func cmdServe() {
 	cfg := loadConfig()
 	token := githubToken()
 	client := gh.NewClient(token, cfg.GitHub.Owner, cfg.GitHub.Repo)
+	client.SetTrustedAuthorAssociations(cfg.Security.TrustedAuthorAssociations)
 	prefix := resolveBranchPrefix(cfg)
 
 	runRequirementsHearingCheck(rootDir, cfg, client)
