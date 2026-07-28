@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,17 +132,18 @@ func TestREQ019_GracefulShutdownDoesNotInterruptInFlightPass(t *testing.T) {
 	}
 }
 
-// TestREQ019_QuitFileStopsLoop verifies .hermit-quit is detected by the
-// run loop itself (not only by the invoked Claude session).
-func TestREQ019_QuitFileStopsLoop(t *testing.T) {
+// TestREQ019_QuitStatusStopsLoop verifies state.StatusQuit (in
+// .hermit/superintendent-state.json) is detected by the run loop itself (not
+// only by the invoked Claude session).
+func TestREQ019_QuitStatusStopsLoop(t *testing.T) {
 	dir := t.TempDir()
 	var calls int32
 
 	invoke := func(ctx context.Context, d string) error {
 		n := atomic.AddInt32(&calls, 1)
 		if n == 1 {
-			if err := os.WriteFile(filepath.Join(dir, ".hermit-quit"), nil, 0o644); err != nil {
-				t.Fatalf("write quit file: %v", err)
+			if err := state.Save(state.Path(dir), state.LoopState{Status: state.StatusQuit}); err != nil {
+				t.Fatalf("save quit status: %v", err)
 			}
 		}
 		return nil
@@ -165,20 +164,20 @@ func TestREQ019_QuitFileStopsLoop(t *testing.T) {
 			t.Fatalf("Run: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not stop after .hermit-quit was created")
+		t.Fatal("Run did not stop after quit status was recorded")
 	}
 	if calls != 1 {
 		t.Errorf("invoke called %d times, want exactly 1 (loop should stop before a 2nd pass once quit is detected)", calls)
 	}
 }
 
-// TestREQ019_PauseFileSkipsPassesWithoutStoppingLoop verifies .hermit-paused
-// is detected by the run loop itself, and that it skips Invoke rather than
-// stopping the loop entirely.
-func TestREQ019_PauseFileSkipsPassesWithoutStoppingLoop(t *testing.T) {
+// TestREQ019_PausedStatusSkipsPassesWithoutStoppingLoop verifies
+// state.StatusPaused is detected by the run loop itself, and that it skips
+// Invoke rather than stopping the loop entirely.
+func TestREQ019_PausedStatusSkipsPassesWithoutStoppingLoop(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".hermit-paused"), nil, 0o644); err != nil {
-		t.Fatalf("write pause file: %v", err)
+	if err := state.Save(state.Path(dir), state.LoopState{Status: state.StatusPaused}); err != nil {
+		t.Fatalf("save paused status: %v", err)
 	}
 
 	var calls int32

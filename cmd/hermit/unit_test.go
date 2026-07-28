@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ytnobody/hermit/internal/risk"
+	"github.com/ytnobody/hermit/internal/state"
 )
 
 // --- loadConfig ---
@@ -607,8 +608,8 @@ func TestCmdPauseResumeStatus(t *testing.T) {
 	w.Close()
 	os.Stdout = origOut
 	buf.ReadFrom(r)
-	if _, err := os.Stat(pauseFile); os.IsNotExist(err) {
-		t.Error(".hermit-paused should exist after pause")
+	if st, err := state.Load(state.Path(dir)); err != nil || st.Status != state.StatusPaused {
+		t.Errorf("status should be %q after pause, got status=%q err=%v", state.StatusPaused, st.Status, err)
 	}
 
 	// Status should be paused
@@ -631,8 +632,8 @@ func TestCmdPauseResumeStatus(t *testing.T) {
 	w.Close()
 	os.Stdout = origOut
 	buf.ReadFrom(r)
-	if _, err := os.Stat(pauseFile); !os.IsNotExist(err) {
-		t.Error(".hermit-paused should be removed after resume")
+	if st, err := state.Load(state.Path(dir)); err != nil || st.Status == state.StatusPaused {
+		t.Errorf("status should not be %q after resume, got status=%q err=%v", state.StatusPaused, st.Status, err)
 	}
 
 	// Resume again (file already gone) — should not crash
@@ -675,17 +676,16 @@ func TestCmdQuitStatus(t *testing.T) {
 	w.Close()
 	os.Stdout = origOut
 	buf.ReadFrom(r)
-	if _, err := os.Stat(quitFile); os.IsNotExist(err) {
-		t.Error(".hermit-quit should exist after quit")
+	if st, err := state.Load(state.Path(dir)); err != nil || st.Status != state.StatusQuit {
+		t.Errorf("status should be %q after quit, got status=%q err=%v", state.StatusQuit, st.Status, err)
 	}
 	if !strings.Contains(buf.String(), "quit") {
 		t.Errorf("expected quit confirmation message, got %q", buf.String())
 	}
 
-	// Status should report quit requested, taking priority over pause
-	if err := os.WriteFile(pauseFile, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Status should still report quit requested (Status is a single field now,
+	// so there's no separate pause marker that could linger and conflict —
+	// see Issue #197).
 	buf.Reset()
 	r, w, _ = os.Pipe()
 	os.Stdout = w
@@ -694,7 +694,7 @@ func TestCmdQuitStatus(t *testing.T) {
 	os.Stdout = origOut
 	buf.ReadFrom(r)
 	if !strings.Contains(buf.String(), "quit requested") {
-		t.Errorf("expected 'quit requested' status even with pause file present, got %q", buf.String())
+		t.Errorf("expected 'quit requested' status, got %q", buf.String())
 	}
 }
 

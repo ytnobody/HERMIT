@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,6 +108,56 @@ func TestSavePartialUpdatePreservesOtherFields(t *testing.T) {
 	}
 	if got.IssueCommentsSince == nil || !got.IssueCommentsSince.Equal(t2) {
 		t.Errorf("IssueCommentsSince = %v, want %v", got.IssueCommentsSince, t2)
+	}
+}
+
+// TestStatusRoundTrips verifies LoopState.Status (Issue #197) survives a
+// Save/Load round trip, and that the zero value (never explicitly set) loads
+// back as the empty string rather than some default — callers (get_loop_state,
+// cmd/hermit) are responsible for treating "" as "running".
+func TestStatusRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := Path(dir)
+
+	for _, status := range []string{StatusRunning, StatusPaused, StatusQuit} {
+		if err := Save(path, LoopState{Status: status}); err != nil {
+			t.Fatalf("Save(%q): %v", status, err)
+		}
+		got, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got.Status != status {
+			t.Errorf("Status = %q, want %q", got.Status, status)
+		}
+	}
+}
+
+// TestStatusZeroValueOmittedFromJSON verifies a LoopState with an empty
+// Status (the backward-compatible default meaning "running") round-trips as
+// the empty string, and does not get coerced to the literal "running" on
+// disk (matching the `status,omitempty` JSON tag).
+func TestStatusZeroValueOmittedFromJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := Path(dir)
+
+	if err := Save(path, LoopState{ConsecutiveFailures: 1}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(b), `"status"`) {
+		t.Errorf("expected status field to be omitted from JSON for the zero value, got: %s", b)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Status != "" {
+		t.Errorf("Status = %q, want empty string", got.Status)
 	}
 }
 

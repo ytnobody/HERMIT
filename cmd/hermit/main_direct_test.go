@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ytnobody/hermit/internal/state"
 )
 
 // directMain calls main() with the given args and captures stdout.
@@ -39,8 +41,12 @@ func TestMainSwitch_Pause(t *testing.T) {
 
 	directMain(t, []string{"hermit", "pause"})
 
-	if _, err := os.Stat(pauseFile); os.IsNotExist(err) {
-		t.Error(".hermit-paused not created by main pause")
+	st, err := state.Load(state.Path(dir))
+	if err != nil {
+		t.Fatalf("state.Load: %v", err)
+	}
+	if st.Status != state.StatusPaused {
+		t.Errorf("status = %q, want %q after main pause", st.Status, state.StatusPaused)
 	}
 }
 
@@ -67,8 +73,12 @@ func TestMainSwitch_Quit(t *testing.T) {
 	if !strings.Contains(out, "quit") {
 		t.Errorf("expected quit message, got %q", out)
 	}
-	if _, err := os.Stat(quitFile); os.IsNotExist(err) {
-		t.Error(".hermit-quit not created by main quit")
+	st, err := state.Load(state.Path(dir))
+	if err != nil {
+		t.Fatalf("state.Load: %v", err)
+	}
+	if st.Status != state.StatusQuit {
+		t.Errorf("status = %q, want %q after main quit", st.Status, state.StatusQuit)
 	}
 
 	statusOut := directMain(t, []string{"hermit", "status"})

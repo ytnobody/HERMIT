@@ -21,6 +21,7 @@ import (
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/risk"
+	"github.com/ytnobody/hermit/internal/state"
 )
 
 // TestREQ002_RequiredMCPToolsRegistered verifies REQ-002: the MCP server
@@ -548,6 +549,30 @@ func TestREQ019_GetLoopState_EmptyWhenNoStateFile(t *testing.T) {
 	}
 	if cf, _ := resp["consecutive_failures"].(float64); cf != 0 {
 		t.Errorf("consecutive_failures = %v, want 0", resp["consecutive_failures"])
+	}
+	if resp["status"] != "running" {
+		t.Errorf(`status = %v, want "running" (Issue #197 default for a never-recorded status)`, resp["status"])
+	}
+}
+
+// TestREQ019_GetLoopState_ReportsPausedStatus verifies get_loop_state surfaces
+// LoopState.Status (Issue #197) once something (e.g. `hermit pause`) has set
+// it in .hermit/superintendent-state.json.
+func TestREQ019_GetLoopState_ReportsPausedStatus(t *testing.T) {
+	s, root := newTestServerWithRoot(t, &mockGithubClient{})
+
+	if err := state.Save(state.Path(root), state.LoopState{Status: state.StatusPaused}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+
+	result := callTool(t, s, "get_loop_state", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	var resp map[string]any
+	decodeToolResult(t, result, &resp)
+	if resp["status"] != "paused" {
+		t.Errorf(`status = %v, want "paused"`, resp["status"])
 	}
 }
 

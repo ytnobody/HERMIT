@@ -72,7 +72,23 @@ type LoopState struct {
 	// since the last success; reset to 0 on success. Written directly by
 	// internal/runloop.
 	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
+	// Status is the Superintendent loop's run state: "running", "paused", or
+	// "quit". The empty string means "running" — this keeps the zero value
+	// backward compatible with state files written before this field existed
+	// (Issue #197), and means a normally-operating loop never actually writes
+	// the literal string "running" to disk. Written by cmd/hermit's
+	// cmdPause/cmdResume/cmdQuit (replacing the former standalone
+	// .hermit-paused/.hermit-quit marker files) and read by
+	// internal/runloop's tick loop and the get_loop_state MCP tool.
+	Status string `json:"status,omitempty"`
 }
+
+// Status values for LoopState.Status.
+const (
+	StatusRunning = "running"
+	StatusPaused  = "paused"
+	StatusQuit    = "quit"
+)
 
 // Load reads the state file at path. A missing file is not an error: it
 // returns the zero-value LoopState, matching a project where the loop has
