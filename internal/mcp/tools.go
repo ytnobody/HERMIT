@@ -560,7 +560,7 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 
 	s.AddTool(
 		mcp.NewTool("get_loop_state",
-			mcp.WithDescription("Returns the cadence-tracking timestamps persisted in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, and health_checks_since (RFC3339, omitted if never recorded) — the 'since' values the Superintendent cycle uses to decide when it last checked PR comments, checked Issue comments, ran the requirements sweep, and ran the health-check sweep. Also reports last_success_tick and consecutive_failures, written by `hermit run`'s own tick loop. This file is owned by HERMIT's Go side: read/write these cadence timestamps only via this tool and update_loop_state, never by hand-writing the JSON file."),
+			mcp.WithDescription("Returns the cadence-tracking timestamps persisted in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, and health_checks_since (RFC3339, omitted if never recorded) — the 'since' values the Superintendent cycle uses to decide when it last checked PR comments, checked Issue comments, ran the requirements sweep, and ran the health-check sweep. Also reports status ('running', 'paused', or 'quit' — set via `hermit pause`/`hermit resume`/`hermit quit`; defaults to 'running' when never recorded), last_success_tick, and consecutive_failures, written by `hermit run`'s own tick loop. This file is owned by HERMIT's Go side: read/write these cadence timestamps only via this tool and update_loop_state, never by hand-writing the JSON file."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			st, err := state.Load(state.Path(rootDir))
@@ -808,8 +808,13 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 // RFC3339 string when set, or omitted entirely when nil, so callers can
 // treat a missing key the same way as "never recorded".
 func loopStateResponse(st state.LoopState) map[string]any {
+	status := st.Status
+	if status == "" {
+		status = state.StatusRunning
+	}
 	resp := map[string]any{
 		"consecutive_failures": st.ConsecutiveFailures,
+		"status":               status,
 	}
 	setIfNotNil := func(key string, t *time.Time) {
 		if t != nil {

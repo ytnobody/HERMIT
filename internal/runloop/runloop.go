@@ -17,8 +17,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/ytnobody/hermit/internal/state"
@@ -68,15 +66,6 @@ type Options struct {
 	Logger *log.Logger
 }
 
-// pauseFileName / quitFileName mirror cmd/hermit's own pauseFile/quitFile
-// constants (".hermit-paused" / ".hermit-quit"). Duplicated here (rather
-// than imported) to keep this package free of an import-cycle risk back
-// into cmd/hermit; both sides are simple constants unlikely to drift.
-const (
-	pauseFileName = ".hermit-paused"
-	quitFileName  = ".hermit-quit"
-)
-
 // sleeper abstracts waiting for Interval so tests don't need real time.
 // It returns true if the wait was cut short by shutdownCtx being canceled.
 type sleeper func(shutdownCtx context.Context, d time.Duration) (canceled bool)
@@ -101,7 +90,7 @@ func defaultSleeper(shutdownCtx context.Context, d time.Duration) bool {
 }
 
 // Run drives the tick loop until shutdownCtx is canceled (SIGINT/SIGTERM in
-// `hermit run`'s case) or .hermit-quit is detected in RootDir.
+// `hermit run`'s case) or the state file's Status is state.StatusQuit.
 //
 // Overlap safety: each iteration blocks on opts.Invoke before doing
 // anything else in the loop body, so two passes running at once is
@@ -133,20 +122,22 @@ func run(shutdownCtx context.Context, opts Options, sleep sleeper) error {
 		logger = log.Default()
 	}
 	statePath := state.Path(opts.RootDir)
-	pausePath := filepath.Join(opts.RootDir, pauseFileName)
-	quitPath := filepath.Join(opts.RootDir, quitFileName)
 
 	for {
 		if shutdownRequested(shutdownCtx) {
 			logger.Println("hermit run: shutdown signal received, stopping")
 			return nil
 		}
-		if fileExists(quitPath) {
-			logger.Println("hermit run: .hermit-quit detected, stopping (not resumable; run `hermit run` again to restart)")
+		curSt, loadErr := state.Load(statePath)
+		if loadErr != nil {
+			logger.Printf("hermit run: warning: failed to load state: %v", loadErr)
+		}
+		if curSt.Status == state.StatusQuit {
+			logger.Println("hermit run: quit status detected, stopping (not resumable; run `hermit run` again to restart)")
 			return nil
 		}
-		if fileExists(pausePath) {
-			logger.Println("hermit run: .hermit-paused detected, skipping this tick")
+		if curSt.Status == state.StatusPaused {
+			logger.Println("hermit run: paused status detected, skipping this tick")
 			if sleep(shutdownCtx, opts.Interval) {
 				logger.Println("hermit run: shutdown signal received while paused, stopping")
 				return nil
@@ -204,7 +195,3 @@ func shutdownRequested(ctx context.Context) bool {
 	}
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}

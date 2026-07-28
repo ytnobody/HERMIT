@@ -220,11 +220,11 @@ hermit run
 
 `hermit run` and `/hermit` are not mutually exclusive — use whichever fits how you want to keep HERMIT alive:
 
-- `hermit pause` / `hermit resume` / `hermit quit` / `hermit status` all work the same way regardless of which one is driving the loop; `hermit run` checks `.hermit-paused`/`.hermit-quit` itself before every tick.
+- `hermit pause` / `hermit resume` / `hermit quit` / `hermit status` all work the same way regardless of which one is driving the loop; `hermit run` checks the `status` field in `.hermit/superintendent-state.json` itself before every tick.
 - `hermit run` sends SIGINT/SIGTERM a graceful shutdown: an in-flight pass is never interrupted — it always finishes, and only then does the loop stop.
 - A pass that hangs or takes a long time never causes overlapping ticks: the next tick is only scheduled after the previous one returns.
 - If `N` consecutive passes fail, `hermit run` sends a notification via `[notification]` (`[run].failure_notify_threshold`, default 3) so unattended failures don't go unnoticed.
-- The three cadence timestamps the Superintendent cycle tracks (last PR-comment check, last Issue-comment check, last requirements sweep) live in `.hermit/superintendent-state.json`, owned by HERMIT's Go code and read/written only through the `get_loop_state`/`update_loop_state` MCP tools — never hand-written by the Superintendent session itself.
+- The three cadence timestamps the Superintendent cycle tracks (last PR-comment check, last Issue-comment check, last requirements sweep), plus the pause/quit `status` field described below, live in `.hermit/superintendent-state.json`, owned by HERMIT's Go code and read/written only through the `get_loop_state`/`update_loop_state` MCP tools (or, for `status`, the `hermit pause`/`hermit resume`/`hermit quit` CLI commands) — never hand-written by the Superintendent session itself.
 
 See "Running HERMIT Continuously" below for keeping `hermit run` alive across reboots/logouts on each platform.
 
@@ -260,7 +260,7 @@ See "Running HERMIT Continuously" below for keeping `hermit run` alive across re
 | `notify` | Sends a notification to the configured webhook (Slack, Discord, or generic) |
 | `get_default_branch` | Returns the repository's default branch name |
 | `now` | Returns the current wall-clock time (RFC3339), authoritative for cadence tracking |
-| `get_loop_state` | Returns the cadence timestamps (`pr_comments_since`, `issue_comments_since`, `requirements_sweep_since`) and `hermit run` liveness fields (`last_success_tick`, `consecutive_failures`) from `.hermit/superintendent-state.json` |
+| `get_loop_state` | Returns the cadence timestamps (`pr_comments_since`, `issue_comments_since`, `requirements_sweep_since`), the pause/quit `status` field (`"running"`/`"paused"`/`"quit"`), and `hermit run` liveness fields (`last_success_tick`, `consecutive_failures`) from `.hermit/superintendent-state.json` |
 | `update_loop_state` | Updates one or more of the three cadence timestamps in `.hermit/superintendent-state.json`; the only supported way to write that file besides `hermit run` itself |
 | `run_requirements_sweep` | Reconciles REQUIREMENTS.md against test results, opening Issues for unimplemented/regressed requirements |
 
@@ -410,19 +410,21 @@ When `[[repos]]` is present, `list_issues` queries all configured repositories a
 ## Pausing, Resuming, and Quitting Autonomous Operation
 
 ```sh
-hermit pause    # pause autonomous operation (creates .hermit-paused)
-hermit resume   # resume autonomous operation (removes .hermit-paused)
-hermit quit     # terminate the /loop entirely (creates .hermit-quit)
+hermit pause    # pause autonomous operation (sets status "paused" in .hermit/superintendent-state.json)
+hermit resume   # resume autonomous operation (clears the "paused" status)
+hermit quit     # terminate the /loop entirely (sets status "quit" in .hermit/superintendent-state.json)
 hermit status   # check current state (running / paused / quit requested)
 ```
 
-The Superintendent checks for `.hermit-paused` at the start of each cycle. Running `hermit pause` stops it after the current cycle completes; `hermit resume` resumes it immediately.
+All four commands read and write a single `status` field (`"running"` — the default when unset —, `"paused"`, or `"quit"`) in `.hermit/superintendent-state.json`, the same Go-owned state file that already tracks `hermit run`'s cadence timestamps (see "`hermit run` and `/hermit`" above). There are no longer separate standalone marker files for pause/quit — this state is consolidated into that one JSON file.
 
-`hermit pause` / `hermit resume` only suspend and resume the Issue-processing part of the cycle — the underlying `/loop` (and its recurring `ScheduleWakeup` reschedule) keeps running, waking up every cycle to re-check the pause flag. Use `hermit quit` (or the `/hermit-quit` skill) when you want to stop the `/loop` itself: it creates `.hermit-quit`, and the Superintendent cycle checks for it first, before the pause check. When present, the cycle stops without calling `ScheduleWakeup` again, ending the loop for good. Unlike pause, quitting is **not** resumable with `hermit resume` — start `/hermit` again to begin a fresh loop.
+The Superintendent checks this `status` field (via the `get_loop_state` MCP tool) at the start of each cycle. Running `hermit pause` stops it after the current cycle completes; `hermit resume` resumes it immediately.
+
+`hermit pause` / `hermit resume` only suspend and resume the Issue-processing part of the cycle — the underlying `/loop` (and its recurring `ScheduleWakeup` reschedule) keeps running, waking up every cycle to re-check the status. Use `hermit quit` (or the `/hermit-quit` skill) when you want to stop the `/loop` itself: it sets `status` to `"quit"`, and the Superintendent cycle checks for that first, before the pause check. When status is `"quit"`, the cycle stops without calling `ScheduleWakeup` again, ending the loop for good. Unlike pause, quitting is **not** resumable with `hermit resume` — start `/hermit` again to begin a fresh loop (after clearing the `"quit"` status, e.g. by deleting `.hermit/superintendent-state.json`).
 
 | | `hermit pause` | `hermit quit` |
 |---|---|---|
-| Flag file | `.hermit-paused` | `.hermit-quit` |
+| State field | `status: "paused"` in `.hermit/superintendent-state.json` | `status: "quit"` in `.hermit/superintendent-state.json` |
 | Effect | Suspends Issue processing; `/loop` keeps ticking | Stops the `/loop` itself (no more `ScheduleWakeup`) |
 | Resumable? | Yes, via `hermit resume` | No — run `/hermit` again to restart |
 
@@ -494,7 +496,7 @@ Run this once after upgrading from an older version if you see warnings about le
 
 ## Running HERMIT Continuously
 
-`hermit run` (see "Alternative to Step 2" above) is a plain foreground process: it runs until it receives SIGINT/SIGTERM, a `.hermit-quit` file appears, or it's killed. To keep it running unattended across reboots, logouts, or crashes, use your platform's normal process-supervision tooling — HERMIT intentionally does not generate or install any of these for you (see REQ-019/REQ-014: HERMIT stays a thin toolbox, not a process manager).
+`hermit run` (see "Alternative to Step 2" above) is a plain foreground process: it runs until it receives SIGINT/SIGTERM, the `status` field in `.hermit/superintendent-state.json` is set to `"quit"` (e.g. via `hermit quit`), or it's killed. To keep it running unattended across reboots, logouts, or crashes, use your platform's normal process-supervision tooling — HERMIT intentionally does not generate or install any of these for you (see REQ-019/REQ-014: HERMIT stays a thin toolbox, not a process manager).
 
 ### systemd (Linux)
 

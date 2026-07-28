@@ -28,6 +28,7 @@ import (
 	"github.com/ytnobody/hermit/internal/requirements"
 	"github.com/ytnobody/hermit/internal/risk"
 	"github.com/ytnobody/hermit/internal/runloop"
+	"github.com/ytnobody/hermit/internal/state"
 )
 
 //go:embed templates/* templates/commands/*
@@ -323,53 +324,77 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|run|install|init|pause|resume|quit|status|use|version|upgrade|cleanup|doctor|dry-run>")
 }
 
-const pauseFile = ".hermit-paused"
-
-// quitFile is a terminal flag file: unlike pauseFile (which is meant to be
-// resumed via `hermit resume`), quitFile signals that the Superintendent's
-// `/loop` should stop entirely — the loop must not call ScheduleWakeup again
-// once this file is present. There is no `hermit unquit`; starting a fresh
-// `/hermit` run again is the intended way to resume autonomous operation
-// after a quit.
-const quitFile = ".hermit-quit"
-
-func cmdPause() {
-	f, err := os.Create(pauseFile)
+// stateRootDir returns the project root used to locate
+// .hermit/superintendent-state.json for the pause/resume/quit/status
+// commands: the current working directory, matching the convention already
+// used by cmdRun/cmdServe (os.Getwd()).
+func stateRootDir() string {
+	dir, err := os.Getwd()
 	if err != nil {
 		fatal(err.Error())
 	}
-	f.Close()
+	return dir
+}
+
+func cmdPause() {
+	path := state.Path(stateRootDir())
+	st, err := state.Load(path)
+	if err != nil {
+		fatal(err.Error())
+	}
+	st.Status = state.StatusPaused
+	if err := state.Save(path, st); err != nil {
+		fatal(err.Error())
+	}
 	fmt.Println("⏸  Autonomous operation paused. To resume: hermit resume")
 }
 
 func cmdResume() {
-	if err := os.Remove(pauseFile); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("Autonomous operation is already running.")
-			return
-		}
+	path := state.Path(stateRootDir())
+	st, err := state.Load(path)
+	if err != nil {
+		fatal(err.Error())
+	}
+	if st.Status != state.StatusPaused {
+		fmt.Println("Autonomous operation is already running.")
+		return
+	}
+	st.Status = ""
+	if err := state.Save(path, st); err != nil {
 		fatal(err.Error())
 	}
 	fmt.Println("▶  Autonomous operation resumed.")
 }
 
+// cmdQuit is terminal: unlike pause (which is meant to be resumed via
+// `hermit resume`), quit signals that the Superintendent's `/loop` should
+// stop entirely — the loop must not reschedule itself once Status is
+// state.StatusQuit. There is no `hermit unquit`; starting a fresh `/hermit`
+// run again is the intended way to resume autonomous operation after a quit.
 func cmdQuit() {
-	f, err := os.Create(quitFile)
+	path := state.Path(stateRootDir())
+	st, err := state.Load(path)
 	if err != nil {
 		fatal(err.Error())
 	}
-	f.Close()
+	st.Status = state.StatusQuit
+	if err := state.Save(path, st); err != nil {
+		fatal(err.Error())
+	}
 	fmt.Println("⏹  Autonomous operation quit requested. The Superintendent loop will stop at the start of its next cycle and will not reschedule itself.")
 }
 
 func cmdStatus() {
-	if _, err := os.Stat(quitFile); err == nil {
-		fmt.Println("⏹  quit requested (loop will stop)")
-		return
+	st, err := state.Load(state.Path(stateRootDir()))
+	if err != nil {
+		fatal(err.Error())
 	}
-	if _, err := os.Stat(pauseFile); err == nil {
+	switch st.Status {
+	case state.StatusQuit:
+		fmt.Println("⏹  quit requested (loop will stop)")
+	case state.StatusPaused:
 		fmt.Println("⏸  paused")
-	} else {
+	default:
 		fmt.Println("▶  running")
 	}
 }

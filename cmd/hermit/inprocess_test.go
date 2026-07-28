@@ -43,16 +43,17 @@ func TestGithubToken_GhSuccess(t *testing.T) {
 
 // --- cmdResume fatal branch ---
 
-// TestCmdResume_RemoveError verifies that cmdResume calls fatal when os.Remove
-// fails for a reason other than "not exists".
+// TestCmdResume_RemoveError verifies that cmdResume calls fatal when the
+// underlying state file cannot be read.
 func TestCmdResume_RemoveError(t *testing.T) {
 	if os.Getenv("TEST_RESUME_ERR") != "" {
 		dir := t.TempDir()
 		prev, _ := os.Getwd()
 		os.Chdir(dir)
 		defer os.Chdir(prev)
-		// Create .hermit-paused as a non-empty directory so os.Remove fails.
-		os.MkdirAll(pauseFile+"/child", 0o755)
+		// Create .hermit as a regular file so state.Load fails (ENOTDIR)
+		// instead of the usual "missing file -> zero value" case.
+		os.WriteFile(".hermit", []byte("not a dir"), 0o644)
 		cmdResume() // should fatal
 		return
 	}
