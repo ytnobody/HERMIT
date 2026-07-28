@@ -183,3 +183,16 @@ MADFLOW の教訓 (HERMIT.md §1, §9) に基づき、HERMIT では以下を行�
 - 受け入れ条件: 上記に該当する実装がコードベースに追加されていないこと (レビューで担保)
 - verify: manual
 - 実装状況: 実装済み (遵守) — 現行コードベースに該当実装は存在しない。`cmd/hermit` のサブコマンドは serve / install / init / doctor / upgrade / version 等の CLI に留まり、Claude Code のプロセス管理や LLM 呼び出しは行っていない
+
+## REQ-015: 制御面パスの evaluate_risk 既定 HIGH 昇格
+
+HERMIT 自身を制約する制御面 (`internal/risk/`・`internal/permissions/`・`internal/readiness/`・`harness.toml`・`.claude/`・`CLAUDE.md`) への変更は、変更ファイル数・行数に関わらず既定で HIGH と判定し、MEDIUM 自動マージの対象から外す。制御面パスへの変更をその制約自身の判定で自動マージしてよいかは構造的に無効な問いであるため、機械的に隔離する。
+
+- `DefaultConfig()` の `HighPaths` は `cmd/`・`go.mod`・`.github/` に加え、上記 6 つの制御面パスを含む
+- `HighPaths` の判定は `MediumPaths` (`internal/`) より優先される。`internal/risk/` のように `HighPaths` と `MediumPaths` の両方に前方一致する変更は HIGH と判定される
+- `internal/risk/`・`harness.toml` 自身が `HighPaths` に含まれることで、`HighPaths` からこれらのパスを除外しようとする変更それ自体が HIGH 判定に掛かり、ガードを弱める PR が自動マージされない
+- `cmd/hermit/templates/CLAUDE.md.tmpl` および `cmd/hermit/templates/harness.toml.tmpl` は既存の `ExcludePaths` により引き続き除外され、今回の変更で HIGH に巻き込まれない
+- `internal/git/` など制御面に該当しない `internal/` 配下の変更は従来通り MEDIUM のまま
+- 受け入れ条件: `internal/risk/`・`internal/permissions/`・`internal/readiness/`・`harness.toml`・`.claude/`・`CLAUDE.md` のいずれかのみを 1 ファイル 1 行変更しても HIGH と判定されること。制御面以外の `internal/` 配下の変更や `cmd/hermit/templates/` 配下のみの変更は従来通りの判定 (MEDIUM・LOW) を維持すること
+- verify: test
+- 実装状況: 実装済み — `internal/risk/evaluator.go` の `DefaultConfig()`。`internal/risk/req_test.go` の `TestREQ015_ControlPlanePathsAreHighRisk` で検証

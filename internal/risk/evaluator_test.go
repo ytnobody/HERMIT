@@ -292,7 +292,20 @@ func TestDefaultConfig_MatchesLegacyHardcodedValues(t *testing.T) {
 	if cfg.MediumFileThreshold != 10 || cfg.MediumLineThreshold != 200 {
 		t.Errorf("unexpected medium thresholds: %+v", cfg)
 	}
-	wantHighPaths := []string{"cmd/", "go.mod", ".github/"}
+	// Issue #179: HighPaths was extended beyond the original cmd/go.mod/.github
+	// trio to also cover HERMIT's own control-plane surfaces, so they're
+	// always HIGH (never auto-merged) regardless of diff size. See REQ-015.
+	wantHighPaths := []string{
+		"cmd/",
+		"go.mod",
+		".github/",
+		"internal/risk/",
+		"internal/permissions/",
+		"internal/readiness/",
+		"harness.toml",
+		".claude/",
+		"CLAUDE.md",
+	}
 	if len(cfg.HighPaths) != len(wantHighPaths) {
 		t.Fatalf("unexpected high paths: %+v", cfg.HighPaths)
 	}

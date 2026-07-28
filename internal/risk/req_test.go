@@ -52,3 +52,86 @@ func TestREQ006_RiskLevelThresholds(t *testing.T) {
 		})
 	}
 }
+
+// TestREQ015_ControlPlanePathsAreHighRisk verifies REQ-015: changes confined
+// to HERMIT's own control-plane surfaces (internal/risk/,
+// internal/permissions/, internal/readiness/, harness.toml, .claude/,
+// CLAUDE.md) are classified HIGH by DefaultConfig()'s HighPaths, even when
+// the diff is a single file / single line, and even though internal/ as a
+// whole is a MediumPaths prefix. It also verifies that non-control-plane
+// internal/ changes remain MEDIUM, and that the pre-existing
+// cmd/hermit/templates/ ExcludePaths behavior for CLAUDE.md.tmpl /
+// harness.toml.tmpl is unaffected.
+func TestREQ015_ControlPlanePathsAreHighRisk(t *testing.T) {
+	tests := []struct {
+		name      string
+		files     []gh.PRFile
+		additions int
+		deletions int
+		want      Level
+	}{
+		{
+			name:      "HIGH: internal/risk/ single-line change",
+			files:     []gh.PRFile{{Filename: "internal/risk/evaluator.go"}},
+			additions: 1, deletions: 0,
+			want: High,
+		},
+		{
+			name:      "HIGH: internal/permissions/ single-line change",
+			files:     []gh.PRFile{{Filename: "internal/permissions/permissions.go"}},
+			additions: 1, deletions: 0,
+			want: High,
+		},
+		{
+			name:      "HIGH: internal/readiness/ single-line change",
+			files:     []gh.PRFile{{Filename: "internal/readiness/readiness.go"}},
+			additions: 1, deletions: 0,
+			want: High,
+		},
+		{
+			name:      "HIGH: harness.toml only",
+			files:     []gh.PRFile{{Filename: "harness.toml"}},
+			additions: 1, deletions: 0,
+			want: High,
+		},
+		{
+			name:      "HIGH: .claude/settings.json only",
+			files:     []gh.PRFile{{Filename: ".claude/settings.json"}},
+			additions: 1, deletions: 0,
+			want: High,
+		},
+		{
+			name:      "HIGH: CLAUDE.md only",
+			files:     []gh.PRFile{{Filename: "CLAUDE.md"}},
+			additions: 1, deletions: 0,
+			want: High,
+		},
+		{
+			name:      "MEDIUM: non-control-plane internal/ path stays MEDIUM",
+			files:     []gh.PRFile{{Filename: "internal/git/worktree.go"}},
+			additions: 5, deletions: 0,
+			want: Medium,
+		},
+		{
+			name: "LOW: cmd/hermit/templates/ scaffold-only diff is not swept into HIGH",
+			files: []gh.PRFile{
+				{Filename: "cmd/hermit/templates/CLAUDE.md.tmpl"},
+				{Filename: "cmd/hermit/templates/harness.toml.tmpl"},
+			},
+			additions: 20, deletions: 5,
+			want: Low,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			level, reasons := Evaluate(tc.files, tc.additions, tc.deletions)
+			if level != tc.want {
+				t.Errorf("Evaluate() level = %v, want %v (reasons: %v)", level, tc.want, reasons)
+			}
+			if tc.want != Low && len(reasons) == 0 {
+				t.Errorf("expected non-empty reasons for %v level", tc.want)
+			}
+		})
+	}
+}
