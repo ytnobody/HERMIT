@@ -1,5 +1,7 @@
 # HERMIT
 
+<img width="1024" height="559" alt="HERMIT logo" src="https://github.com/user-attachments/assets/43100d7b-0f36-4783-891d-f3aad3887238" />
+
 **Harness for Engineer Role Management via Interactive Tasks**
 
 A simple multi-agent development automation harness leveraging Claude Code's native features (Agent tool and MCP).
