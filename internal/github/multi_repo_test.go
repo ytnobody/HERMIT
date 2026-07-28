@@ -63,7 +63,7 @@ func TestListOpenIssues_SingleRepo(t *testing.T) {
 	mux.HandleFunc("/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(issueListResponse([]map[string]any{
-			{"number": 1, "title": "Issue one", "body": "body", "labels": []map[string]any{}},
+			{"number": 1, "title": "Issue one", "body": "body", "labels": []map[string]any{}, "author_association": "OWNER"},
 			{"number": 2, "title": "Issue two", "body": "body2", "labels": []map[string]any{},
 				"pull_request": map[string]any{"url": "http://example.com"}}, // should be skipped
 		}))
@@ -100,7 +100,7 @@ func TestListOpenIssues_LabelFilter(t *testing.T) {
 		json.NewEncoder(w).Encode([]map[string]any{
 			{"number": 5, "title": "Labeled issue", "body": "", "labels": []map[string]any{
 				{"name": "hermit"},
-			}},
+			}, "author_association": "MEMBER"},
 		})
 	})
 
@@ -138,7 +138,7 @@ func TestListOpenIssuesFromRepo_SetsOwnerAndRepo(t *testing.T) {
 	mux.HandleFunc("/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"number": 10, "title": "Test", "body": "", "labels": []map[string]any{}},
+			{"number": 10, "title": "Test", "body": "", "labels": []map[string]any{}, "author_association": "OWNER"},
 		})
 	})
 
@@ -166,13 +166,13 @@ func TestListAllIssues_MultiRepo(t *testing.T) {
 	mux.HandleFunc("/repos/org/frontend/issues", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"number": 1, "title": "Frontend issue", "body": "", "labels": []map[string]any{}},
+			{"number": 1, "title": "Frontend issue", "body": "", "labels": []map[string]any{}, "author_association": "OWNER"},
 		})
 	})
 	mux.HandleFunc("/repos/org/backend/issues", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"number": 2, "title": "Backend issue", "body": "", "labels": []map[string]any{}},
+			{"number": 2, "title": "Backend issue", "body": "", "labels": []map[string]any{}, "author_association": "COLLABORATOR"},
 		})
 	})
 
@@ -211,7 +211,7 @@ func TestListAllIssues_EmptyRepos_FallbackToPrimary(t *testing.T) {
 	mux.HandleFunc("/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"number": 99, "title": "Primary repo issue", "body": "", "labels": []map[string]any{}},
+			{"number": 99, "title": "Primary repo issue", "body": "", "labels": []map[string]any{}, "author_association": "OWNER"},
 		})
 	})
 
@@ -241,7 +241,7 @@ func TestListAllIssues_MultiRepo_WithLabelFilter(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"number": 3, "title": "Tagged issue", "body": "", "labels": []map[string]any{{"name": "hermit"}}},
+			{"number": 3, "title": "Tagged issue", "body": "", "labels": []map[string]any{{"name": "hermit"}}, "author_association": "OWNER"},
 		})
 	})
 

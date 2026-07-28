@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"log"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -12,6 +13,21 @@ import (
 	gogithub "github.com/google/go-github/v62/github"
 	"golang.org/x/oauth2"
 )
+
+// DefaultTrustedAuthorAssociations is the safe-by-default allowlist of
+// GitHub "author_association" values whose Issues are surfaced to the
+// HERMIT loop, applied whenever harness.toml does not configure
+// [security].trusted_author_associations (or leaves it empty).
+//
+// HERMIT runs unattended with broad local tool access (Bash(*) among it —
+// see Issue #180), and public repositories accept Issues from anyone. Since
+// Issue #178, list_issues only returns Issues whose author has one of these
+// associations with the repository — CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR,
+// and NONE (the associations any GitHub account can have with a public
+// repo) are deliberately excluded from the default so a stranger's Issue
+// body can never reach an Engineer as an instruction without an explicit
+// opt-in.
+var DefaultTrustedAuthorAssociations = []string{"OWNER", "MEMBER", "COLLABORATOR"}
 
 // issueRefRe matches common issue reference patterns in PR bodies/titles
 // e.g. "closes #31", "fixes #31", "#31"
@@ -48,6 +64,14 @@ type Issue struct {
 	// Owner and Repo are populated in multi-repo mode to identify the source repo.
 	Owner string `json:"Owner,omitempty"`
 	Repo  string `json:"Repo,omitempty"`
+	// AuthorAssociation is the GitHub-computed relationship between the
+	// Issue's author and the repository (e.g. "OWNER", "MEMBER",
+	// "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE").
+	// Issues whose association is not in the trusted allowlist are already
+	// filtered out before this struct is returned by ListOpenIssues /
+	// ListAllIssues (see (*Client).isTrustedAuthor); the field is retained
+	// on the returned value for observability/testing.
+	AuthorAssociation string `json:"AuthorAssociation,omitempty"`
 }
 
 // PRInfo holds a summary of an open pull request returned by ListOpenPRs.
@@ -94,6 +118,14 @@ type Client struct {
 	gh    *gogithub.Client
 	owner string
 	repo  string
+	// trustedAssociations is the allowlist of author_association values
+	// (upper-cased) whose Issues are surfaced by ListOpenIssues/ListAllIssues.
+	// nil/empty means "not configured" and DefaultTrustedAuthorAssociations
+	// is used — see isTrustedAuthor. This keeps the safe default in effect
+	// both for callers that never call SetTrustedAuthorAssociations (e.g.
+	// existing tests constructing Client via struct literal) and for
+	// harness.toml deployments that omit the [security] section entirely.
+	trustedAssociations []string
 }
 
 func NewClient(token, owner, repo string) *Client {
@@ -106,9 +138,46 @@ func NewClient(token, owner, repo string) *Client {
 	}
 }
 
+// SetTrustedAuthorAssociations configures the allowlist of GitHub
+// "author_association" values (case-insensitive) whose Issues are surfaced
+// by ListOpenIssues/ListAllIssues. Passing nil or an empty slice restores
+// the safe default (DefaultTrustedAuthorAssociations) rather than allowing
+// every author — there is intentionally no way to configure "allow
+// everyone" through this method (see Issue #178).
+func (c *Client) SetTrustedAuthorAssociations(assocs []string) {
+	c.trustedAssociations = assocs
+}
+
+// isTrustedAuthor reports whether the given author_association value (as
+// returned by the GitHub API, e.g. "OWNER", "COLLABORATOR", "NONE") is
+// allowed to have its Issues surfaced to the HERMIT loop. Comparison is
+// case-insensitive. When no allowlist has been configured on the client,
+// DefaultTrustedAuthorAssociations is used — an unset/misconfigured
+// allowlist never falls back to "allow everyone".
+func (c *Client) isTrustedAuthor(association string) bool {
+	allowed := c.trustedAssociations
+	if len(allowed) == 0 {
+		allowed = DefaultTrustedAuthorAssociations
+	}
+	for _, a := range allowed {
+		if strings.EqualFold(a, association) {
+			return true
+		}
+	}
+	return false
+}
+
 // listOpenIssuesFromRepo fetches open issues from a specific owner/repo pair,
 // optionally filtering by label. Each returned Issue has its Owner and Repo
 // fields set to the provided values.
+//
+// Issues whose author does not have a trusted author_association (see
+// isTrustedAuthor/DefaultTrustedAuthorAssociations) are excluded from the
+// result — HERMIT runs unattended with broad local tool access, and public
+// repos accept Issues from anyone, so an untrusted Issue body must never
+// reach the loop as an implicit instruction (Issue #178). Excluded issues
+// are not silently dropped: each one is logged so a human operator watching
+// HERMIT's logs can notice.
 func (c *Client) listOpenIssuesFromRepo(owner, repo, label string) ([]Issue, error) {
 	opts := &gogithub.IssueListByRepoOptions{
 		State: "open",
@@ -125,17 +194,24 @@ func (c *Client) listOpenIssuesFromRepo(owner, repo, label string) ([]Issue, err
 		if i.PullRequestLinks != nil {
 			continue // skip PRs
 		}
+		association := i.GetAuthorAssociation()
+		if !c.isTrustedAuthor(association) {
+			log.Printf("security: excluding issue #%d in %s/%s from the queue: author_association=%q is not in the trusted allowlist",
+				i.GetNumber(), owner, repo, association)
+			continue
+		}
 		var labels []string
 		for _, l := range i.Labels {
 			labels = append(labels, l.GetName())
 		}
 		result = append(result, Issue{
-			Number: i.GetNumber(),
-			Title:  i.GetTitle(),
-			Body:   i.GetBody(),
-			Labels: labels,
-			Owner:  owner,
-			Repo:   repo,
+			Number:            i.GetNumber(),
+			Title:             i.GetTitle(),
+			Body:              i.GetBody(),
+			Labels:            labels,
+			Owner:             owner,
+			Repo:              repo,
+			AuthorAssociation: association,
 		})
 	}
 	return result, nil

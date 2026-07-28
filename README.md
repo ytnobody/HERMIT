@@ -235,6 +235,9 @@ engineer       = "claude-sonnet-5"   # model used for Engineer roles
 # skip_acceptance_criteria_check = false                  # if true, don't require an "Acceptance Criteria" / "受け入れ条件" section
 # label                          = "needs-clarification"  # label applied to Issues judged not ready; also excludes them from list_issues
 
+# [security]
+# trusted_author_associations = ["OWNER", "MEMBER", "COLLABORATOR"]  # default shown; other possible values: "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE"
+
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook
 # type        = "slack"   # "slack" | "discord" | "generic" (auto-detected from URL if omitted)
@@ -267,6 +270,21 @@ When an Issue is judged not ready, HERMIT:
 3. Excludes the Issue from the `list_issues` result until a human removes the label (or triggers a fresh check, e.g. by posting the trigger comment).
 
 Once the requirements are filled in and the label is removed, the Issue returns to the normal queue on the next cycle.
+
+### Trusted Issue Authors (`[security]`)
+
+HERMIT can run against public repositories, where anyone can open an Issue. Since the Superintendent hands Issue bodies to an Engineer that runs locally with broad tool access (including `Bash(*)`), an Issue from an untrusted stranger must never be treated as an instruction.
+
+To prevent this, `list_issues` (`ListOpenIssues` / `ListAllIssues`) filters every Issue by the GitHub-computed `author_association` between its author and the repository, keeping only Issues from authors in the `trusted_author_associations` allowlist:
+
+```toml
+[security]
+trusted_author_associations = ["OWNER", "MEMBER", "COLLABORATOR"]  # default shown
+```
+
+- **Default and fallback**: `OWNER`, `MEMBER`, and `COLLABORATOR` only. This is applied both when `[security]` is omitted from `harness.toml` entirely and when `trusted_author_associations` is present but left empty — there is no configuration that resolves to "allow everyone." `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, and `NONE` (the associations any GitHub account, including a first-time stranger, can have on a public repo) are excluded by default.
+- **Custom allowlist**: set `trusted_author_associations` to any subset (or superset) of GitHub's `author_association` values to widen or narrow the allowlist for your project.
+- **Visibility**: Issues excluded by this filter are never silently dropped — each exclusion is logged (`security: excluding issue #N in owner/repo ...: author_association="..." is not in the trusted allowlist`) so an operator watching HERMIT's logs can notice. Excluded Issues also never reach `assign_issue` / `create_worktree`, since the Superintendent only acts on what `list_issues` returns.
 
 ### Model Selection
 
