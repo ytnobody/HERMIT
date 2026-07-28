@@ -2,25 +2,31 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"embed"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/template"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
 	"github.com/ytnobody/hermit/internal/git"
 	gh "github.com/ytnobody/hermit/internal/github"
 	"github.com/ytnobody/hermit/internal/mcp"
+	"github.com/ytnobody/hermit/internal/notification"
 	"github.com/ytnobody/hermit/internal/permissions"
 	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/requirements"
 	"github.com/ytnobody/hermit/internal/risk"
+	"github.com/ytnobody/hermit/internal/runloop"
 )
 
 //go:embed templates/* templates/commands/*
@@ -173,6 +179,17 @@ type Config struct {
 		// "allow everyone" fallback; it resolves to this same safe default.
 		TrustedAuthorAssociations []string `toml:"trusted_author_associations"`
 	} `toml:"security"`
+	// Run configures `hermit run` (Issue #181), the long-lived process that
+	// owns the Superintendent tick loop outside of any Claude Code session.
+	Run struct {
+		// FailureNotifyThreshold is the number of consecutive failed passes
+		// after which `hermit run` sends a webhook notification (using
+		// [notification]). <= 0 falls back to defaultFailureNotifyThreshold,
+		// matching this codebase's existing "<=0 means default" convention
+		// (see LoopInterval/MaxEngineers in loadConfig) rather than treating
+		// 0 as "disabled".
+		FailureNotifyThreshold int `toml:"failure_notify_threshold"`
+	} `toml:"run"`
 }
 
 // resolveRiskConfig builds the effective default risk.Config (harness.toml's
@@ -242,6 +259,8 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		cmdServe()
+	case "run":
+		cmdRun()
 	case "install":
 		cmdInstall()
 	case "init":
@@ -282,7 +301,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|install|init|pause|resume|quit|status|use|version|upgrade|cleanup|doctor|dry-run>")
+	fmt.Fprintln(os.Stderr, "Usage: hermit <serve|run|install|init|pause|resume|quit|status|use|version|upgrade|cleanup|doctor|dry-run>")
 }
 
 const pauseFile = ".hermit-paused"
@@ -523,6 +542,101 @@ func cmdServe() {
 	if err := mcp.Serve(client, cfg.GitHub.RateLimitThreshold, rootDir, prefix, cfg.Agent.LoopInterval, cfg.Notification.WebhookURL, cfg.Notification.Type, repos, cfg.Agent.TriggerComment, readinessCfg, defaultRiskCfg, repoRiskCfgs, model, requirementsCfg, cfg.Agent.MaxEngineers); err != nil {
 		fatal(err.Error())
 	}
+}
+
+// defaultFailureNotifyThreshold is the fallback [run].failure_notify_threshold
+// value applied when harness.toml omits it or sets it to a non-positive
+// number (see Config.Run's doc comment).
+const defaultFailureNotifyThreshold = 3
+
+// claudeMdFile is the prompt file `hermit run` feeds to `claude -p` on every
+// tick, read fresh each time so edits to CLAUDE.md take effect on the very
+// next tick without restarting `hermit run`.
+const claudeMdFile = "CLAUDE.md"
+
+// buildClaudeRunArgs builds the argument list for the non-interactive
+// `claude` invocation `hermit run` performs on every tick. It mirrors the
+// pattern documented in docs/github-actions.md for driving Claude Code
+// unattended: `--dangerously-skip-permissions` so a tick never blocks on a
+// permission prompt (Issue #181's "非対話で完走すること — permission prompt で
+// ハングしない"), `--model` when a Superintendent model is configured, and
+// `-p <prompt>` with the full CLAUDE.md contents as the prompt.
+func buildClaudeRunArgs(superintendentModel, promptBody string) []string {
+	args := []string{"--dangerously-skip-permissions"}
+	if superintendentModel != "" {
+		args = append(args, "--model", superintendentModel)
+	}
+	args = append(args, "-p", promptBody)
+	return args
+}
+
+// newClaudeInvoker returns a runloop.Invoker that runs `claude` once,
+// non-interactively, using dir as both the working directory and the
+// location CLAUDE.md is read from (so `hermit run` always reflects the
+// current CLAUDE.md, even if it was edited between ticks).
+func newClaudeInvoker(claudeBin, superintendentModel string) runloop.Invoker {
+	return func(ctx context.Context, dir string) error {
+		promptBody, err := os.ReadFile(filepath.Join(dir, claudeMdFile))
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", claudeMdFile, err)
+		}
+		args := buildClaudeRunArgs(superintendentModel, string(promptBody))
+		cmd := exec.CommandContext(ctx, claudeBin, args...)
+		cmd.Dir = dir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = nil
+		return cmd.Run()
+	}
+}
+
+// cmdRun implements `hermit run` (Issue #181): a long-lived process, external
+// to any Claude Code session, that ticks the Superintendent cycle by
+// launching `claude -p` once per tick and waiting for it to finish. This
+// replaces the requirement that a human keep a `claude` session with /hermit
+// open indefinitely — see runloop.Run's doc comment for the tick/overlap/
+// graceful-shutdown semantics, and internal/state for the
+// .hermit/superintendent-state.json file this owns.
+//
+// `hermit run` and the CLAUDE.md-driven `/hermit` slash command are not
+// mutually exclusive: a project may keep using `/hermit` interactively while
+// also running `hermit run` unattended (or vice versa) — see Issue #181's
+// explicit "スコープ外" on retiring the slash command.
+func cmdRun() {
+	cfg := loadConfig()
+	rootDir, err := os.Getwd()
+	if err != nil {
+		fatal(err.Error())
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, claudeMdFile)); err != nil {
+		fatal(fmt.Sprintf("%s not found in %s; run `hermit init` first", claudeMdFile, rootDir))
+	}
+
+	threshold := cfg.Run.FailureNotifyThreshold
+	if threshold <= 0 {
+		threshold = defaultFailureNotifyThreshold
+	}
+	interval := time.Duration(cfg.Agent.LoopInterval) * time.Second
+
+	fmt.Printf("hermit run: starting (interval: %s, failure_notify_threshold: %d)\n", interval, threshold)
+	fmt.Println("hermit run: press Ctrl-C (SIGINT) or send SIGTERM to stop gracefully after the current pass")
+
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	opts := runloop.Options{
+		RootDir:                rootDir,
+		Invoke:                 newClaudeInvoker("claude", cfg.Model.Superintendent),
+		Interval:               interval,
+		FailureNotifyThreshold: threshold,
+		WebhookURL:             cfg.Notification.WebhookURL,
+		WebhookType:            cfg.Notification.Type,
+		Notify:                 notification.Send,
+	}
+	if err := runloop.Run(shutdownCtx, opts); err != nil {
+		fatal(err.Error())
+	}
+	fmt.Println("hermit run: stopped")
 }
 
 // resolveHearingPaths returns the effective list of candidate

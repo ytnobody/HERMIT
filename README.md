@@ -207,6 +207,25 @@ GitHub Issue created
 
 No further action is needed. HERMIT handles the entire development workflow autonomously.
 
+### Alternative to Step 2: `hermit run` (no Claude Code session required)
+
+`/hermit` keeps the Superintendent loop alive inside a Claude Code session — a terminal running `claude` has to stay open for as long as you want autonomous operation. `hermit run` moves that loop into HERMIT's own long-lived process instead: it owns an internal ticker and, once per tick, launches `claude -p` non-interactively (no permission prompts, `--dangerously-skip-permissions`), waits for it to finish, then waits `[agent].loop_interval` before the next tick. `hermit serve` is already a long-lived process (the MCP server); `hermit run` is the same shape applied to the Superintendent cycle itself.
+
+```sh
+cd your-project   # directory where hermit init was run
+hermit run
+```
+
+`hermit run` and `/hermit` are not mutually exclusive — use whichever fits how you want to keep HERMIT alive:
+
+- `hermit pause` / `hermit resume` / `hermit quit` / `hermit status` all work the same way regardless of which one is driving the loop; `hermit run` checks `.hermit-paused`/`.hermit-quit` itself before every tick.
+- `hermit run` sends SIGINT/SIGTERM a graceful shutdown: an in-flight pass is never interrupted — it always finishes, and only then does the loop stop.
+- A pass that hangs or takes a long time never causes overlapping ticks: the next tick is only scheduled after the previous one returns.
+- If `N` consecutive passes fail, `hermit run` sends a notification via `[notification]` (`[run].failure_notify_threshold`, default 3) so unattended failures don't go unnoticed.
+- The three cadence timestamps the Superintendent cycle tracks (last PR-comment check, last Issue-comment check, last requirements sweep) live in `.hermit/superintendent-state.json`, owned by HERMIT's Go code and read/written only through the `get_loop_state`/`update_loop_state` MCP tools — never hand-written by the Superintendent session itself.
+
+See "Running HERMIT Continuously" below for keeping `hermit run` alive across reboots/logouts on each platform.
+
 ### Superintendent Cycle
 
 1. Retrieve open Issues with `list_issues`
@@ -238,6 +257,10 @@ No further action is needed. HERMIT handles the entire development workflow auto
 | `get_config` | Returns current HERMIT configuration values (e.g. `loop_interval`) |
 | `notify` | Sends a notification to the configured webhook (Slack, Discord, or generic) |
 | `get_default_branch` | Returns the repository's default branch name |
+| `now` | Returns the current wall-clock time (RFC3339), authoritative for cadence tracking |
+| `get_loop_state` | Returns the cadence timestamps (`pr_comments_since`, `issue_comments_since`, `requirements_sweep_since`) and `hermit run` liveness fields (`last_success_tick`, `consecutive_failures`) from `.hermit/superintendent-state.json` |
+| `update_loop_state` | Updates one or more of the three cadence timestamps in `.hermit/superintendent-state.json`; the only supported way to write that file besides `hermit run` itself |
+| `run_requirements_sweep` | Reconciles REQUIREMENTS.md against test results, opening Issues for unimplemented/regressed requirements |
 
 ### Risk Evaluation Criteria
 
@@ -291,6 +314,9 @@ engineer       = "claude-sonnet-5"   # model used for Engineer roles
 # [notification]
 # webhook_url = "https://hooks.slack.com/services/..."  # Slack, Discord, or generic webhook
 # type        = "slack"   # "slack" | "discord" | "generic" (auto-detected from URL if omitted)
+
+# [run]
+# failure_notify_threshold = 3  # `hermit run`: consecutive failed passes before a webhook notification (default: 3)
 ```
 
 **Pass `GITHUB_TOKEN` as an environment variable. Do not write it in `harness.toml`.**
@@ -417,6 +443,7 @@ When the score drops below 70, a lesson is generated and saved to `.hermit/lesso
 
 ```
 hermit serve     # Start the MCP server (stdio) — Claude Code auto-starts this, manual execution normally not needed
+hermit run       # Start the Superintendent tick loop as a standalone long-lived process (no Claude Code session needed)
 hermit install   # Register MCP server via `claude mcp add` and install slash commands
 hermit init      # Initialize a project (generate harness.toml, CLAUDE.md, issue template, settings)
 hermit pause     # Pause autonomous operation (resumable)
@@ -460,6 +487,99 @@ Detects and removes:
 - **Zombie worktrees** — git worktrees whose directories no longer exist on disk
 
 Run this once after upgrading from an older version if you see warnings about legacy resources on `hermit serve` startup.
+
+---
+
+## Running HERMIT Continuously
+
+`hermit run` (see "Alternative to Step 2" above) is a plain foreground process: it runs until it receives SIGINT/SIGTERM, a `.hermit-quit` file appears, or it's killed. To keep it running unattended across reboots, logouts, or crashes, use your platform's normal process-supervision tooling — HERMIT intentionally does not generate or install any of these for you (see REQ-019/REQ-014: HERMIT stays a thin toolbox, not a process manager).
+
+### systemd (Linux)
+
+Create a user service, e.g. `~/.config/systemd/user/hermit-run.service`:
+
+```ini
+[Unit]
+Description=HERMIT Superintendent loop
+
+[Service]
+WorkingDirectory=/path/to/your-project
+ExecStart=/path/to/hermit run
+Restart=on-failure
+Environment=GITHUB_TOKEN=...
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now hermit-run.service
+journalctl --user -u hermit-run -f   # follow logs
+```
+
+### launchd (macOS)
+
+Create `~/Library/LaunchAgents/com.hermit.run.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.hermit.run</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/path/to/hermit</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key><string>/path/to/your-project</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/hermit-run.log</string>
+  <key>StandardErrorPath</key><string>/tmp/hermit-run.err</string>
+</dict>
+</plist>
+```
+
+```sh
+launchctl load ~/Library/LaunchAgents/com.hermit.run.plist
+```
+
+### Windows Service
+
+Use a lightweight wrapper such as [WinSW](https://github.com/winsw/winsw) or [NSSM](https://nssm.cc/) to register `hermit.exe run` (with `WorkingDirectory` set to your project) as a Windows service — HERMIT does not register itself as one.
+
+### tmux / screen
+
+The simplest option for a single long-running session:
+
+```sh
+tmux new -d -s hermit 'cd /path/to/your-project && hermit run'
+tmux attach -t hermit   # to check on it later
+```
+
+### Docker
+
+```dockerfile
+FROM golang:1-alpine AS build
+# ... build the hermit binary ...
+
+FROM alpine
+RUN apk add --no-cache git github-cli nodejs npm \
+ && npm install -g @anthropic-ai/claude-code
+COPY --from=build /out/hermit /usr/local/bin/hermit
+WORKDIR /project
+ENTRYPOINT ["hermit", "run"]
+```
+
+```sh
+docker run -d --name hermit-run \
+  -e GITHUB_TOKEN=... -e ANTHROPIC_API_KEY=... \
+  -v /path/to/your-project:/project \
+  your-hermit-image
+docker logs -f hermit-run
+```
 
 ---
 

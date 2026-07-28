@@ -21,7 +21,7 @@
 
 ## 現状把握サマリ (2026-07 時点)
 
-全 14 要件のうち **実装済み 14 件 / 一部実装 0 件 / 未実装 0 件**。設計文書 HERMIT.md の骨格はすべて実装されており、多くの領域で設計を超えて拡張されています。一方、HERMIT.md 自体が実装に追従しておらず、以下の差分 (設計文書の記述と実際の実装の乖離) があります。
+全 17 要件のうち **実装済み 17 件 / 一部実装 0 件 / 未実装 0 件**。設計文書 HERMIT.md の骨格はすべて実装されており、多くの領域で設計を超えて拡張されています(Issue #181 の `hermit run` (REQ-019) を含む)。一方、HERMIT.md 自体が実装に追従しておらず、以下の差分 (設計文書の記述と実際の実装の乖離) があります。
 
 | # | 差分 | 設計 (HERMIT.md) | 実装 (現状) |
 |---|---|---|---|
@@ -176,13 +176,13 @@ Superintendent が同時に生成する Engineer の数は `harness.toml` の `[
 
 MADFLOW の教訓 (HERMIT.md §1, §9) に基づき、HERMIT では以下を行わない。
 
-- Go バイナリが Claude Code をサブプロセスとして起動・管理する「外側から包む」アーキテクチャ
+- Go バイナリが Claude Code をサブプロセスとして起動・管理する「外側から包む」アーキテクチャ (ただし REQ-019 `hermit run` は明示的な例外— 下記注記参照)
 - エージェンティックループ・LLM API 呼び出しの Go による再実装
 - チャットログ (ファイル) 経由のエージェント間通信 — Agent tool の入出力で代替する
 - タイマーによるコンテキストリセット等のコンテキスト/プロセスライフサイクル管理 — Claude Code に委譲する
-- 受け入れ条件: 上記に該当する実装がコードベースに追加されていないこと (レビューで担保)
+- 受け入れ条件: 上記に該当する実装 (ただし REQ-019 で明示的に許可された `hermit run` の範囲を除く) がコードベースに追加されていないこと (レビューで担保)
 - verify: manual
-- 実装状況: 実装済み (遵守) — 現行コードベースに該当実装は存在しない。`cmd/hermit` のサブコマンドは serve / install / init / doctor / upgrade / version 等の CLI に留まり、Claude Code のプロセス管理や LLM 呼び出しは行っていない
+- 実装状況: 実装済み (遵守、Issue #181 による限定的な例外あり) — `cmd/hermit` のサブコマンドは serve / run / install / init / doctor / upgrade / version 等の CLI に留まり、Claude Code のプロセス管理や LLM 呼び出しの再実装は行っていない。唯一の例外が REQ-019 の `hermit run`: `claude -p` を子プロセスとして起動する「外側から包む」形に見えるが、(1) エージェンティックループ・コンテキスト管理・LLM API 呼び出しの再実装は一切行わず、1 tick = 1 回の `claude -p` 起動を待つだけの薄いラッパーに留まる、(2) これは Issue #147 (Superintendent をバックグラウンドサブエージェント化する設計) の再導入ではなく、Issue #171 で実証された「サブエージェント spawn 上限の枯渇によるループの静かな停止」という失敗モードを構造的に回避するための独立した設計 (3 回目の再設計) である、という理由により、この 1 行に限り本要件の対象から明示的に除外する。詳細は REQ-019 を参照
 
 ## REQ-015: 制御面パスの evaluate_risk 既定 HIGH 昇格
 
@@ -204,7 +204,6 @@ reconcile sweep の review-test は、要件の「仕様」が変わったとき
 - 受け入れ条件: `Requirement.Hash` が `受け入れ条件` と `verify` のみから計算され、要件ブロック全体からは計算されないこと。`実装状況` 行のみを変更しても次の sweep で review-test が発火しないこと。`受け入れ条件` の変更、および `verify` の `test` ↔ `manual` の切り替えは従来どおり発火すること。見出しや説明文のみの変更では発火しないこと。ハッシュストアに計算方式のバージョンが記録され、方式変更後の初回 sweep は全件を再計算・保存するのみで Issue を起票しないこと
 - verify: test
 - 実装状況: 実装済み — `internal/requirements/requirements.go` の `specHash` が `AcceptanceCriteria` と `Verify` のみからハッシュを計算するように変更 (旧 `hashText(block)` を置き換え)。`internal/requirements/hashstore.go` の `HashStore` インターフェースを `Load() (version int, hashes map[string]string, err error)` / `Save(version int, hashes map[string]string) error` に拡張し、`HashSchemeVersion` 定数 (現在値 2) を導入。旧形式 (バージョン無しの素の map) のファイルは version 0 として扱われ後方互換。`internal/requirements/sweep.go` の `Sweep` は読み込んだバージョンが `HashSchemeVersion` と異なる場合 `schemeChanged` として HashChanged 判定を強制的に false にし (review-test を発火させず)、sweep 終了時に現行バージョンでハッシュを保存し直すことで移行を1回のsweepで完了させる。自己増殖ループの回帰テストは `internal/requirements/sweep_test.go` の `TestSweep_ImplementationStatusOnlyChange_DoesNotFireReviewTest`、スキーマ移行の回帰テストは同ファイルの `TestSweep_HashSchemeMigration_DoesNotFireReviewTest_JustRecomputesAndSaves`、ハッシュ計算自体の単体テストは `internal/requirements/requirements_test.go` の `TestParse_HashUnaffectedByImplementationStatusField` / `TestParse_HashUnaffectedByTitleOrDescriptionOnly` / `TestParse_HashChangesWithVerifyMode` で検証。REQ-ID 命名規約に沿った `TestREQ016_ReviewTestHashIgnoresImplementationStatus` を追加
-
 ## REQ-017: list_issues は信頼できる author_association の Issue のみを返す
 
 HERMIT は public リポジトリで運用され得るため、第三者が作成した Issue の本文がそのまま Engineer への指示としてローカルで実行されることを防ぐ。`ListOpenIssues` / `ListAllIssues` は GitHub API の `author_association` を参照し、信頼できる association を持つ Issue のみを返す。信頼する association は `harness.toml` の `[security] trusted_author_associations` で設定可能で、既定値は `OWNER` / `MEMBER` / `COLLABORATOR` の 3 種のみ (`CONTRIBUTOR` / `FIRST_TIME_CONTRIBUTOR` / `NONE` は含めない)。
@@ -227,3 +226,13 @@ Engineer は `Bash(*)` 許可でローカルマシン上で動作しており、
 - 受け入れ条件: `hermit init` が生成する `.claude/settings.json` に上記構造の `sandbox` ブロックが含まれ、`allowUnsandboxedCommands: false` / `GITHUB_TOKEN` の `mode: mask` + `injectHosts` が満たされていること。生成された設定を適用した状態で `go build ./...` / `go test ./...` が成功し、`gh pr create` 相当の操作が実行できること。`hermit doctor` が上記 3 種の警告を検出すること。既存プロジェクトへの `hermit init` 再実行が既存の `permissions` 設定を破壊しないこと
 - verify: test
 - 実装状況: 実装済み — `internal/permissions/permissions.go` の `DefaultSandboxSettings` / `MergeDefaultSettings` (再実行時は既存のトップレベルキーを保持し、欠けているキーのみ補完)、`cmd/hermit/main.go` の `writeClaudeSettings` (`MergeDefaultSettings` を経由するよう変更)、`cmd/hermit/doctor.go` の `checkSandboxSettings` (3 種の警告)。テストは `internal/permissions/permissions_test.go` の `TestREQ018_*` 群 (`DefaultSandboxSettings` の `allowUnsandboxedCommands`/`GITHUB_TOKEN`/Go ツールチェーン許可ドメイン、`MergeDefaultSettings` の新規生成・既存 `permissions`/`sandbox` の保持・エラー経路) と `cmd/hermit/doctor_test.go` / `cmd/hermit/unit_test.go` の `TestREQ018_*` 群 (`checkSandboxSettings` の警告条件、`writeClaudeSettings` の再実行時非破壊)。`go build ./...` と `go test ./...` の成功、および `gh pr create` 相当操作の実行可能性は本 Issue #180 の PR 自体 (生成された設定下で `go test ./...` を通し、同じ worktree から `gh pr create` で PR を作成) によって実地検証済み。README の "Sandboxing the Engineer" セクションにスコープ precedence・managed settings・Issue #179 依存の記載を追加
+
+## REQ-019: `hermit run` — Superintendent ループを Claude Code セッションの外に出す
+
+Issue #181。無人運用のために利用者が `claude` を起動し `/hermit` を打ったセッションを永続的に保持し続ける必要がある、という #147→#172 を経てもなお残っていた制約を取り除くため、`hermit run` サブコマンドを追加する。長寿命の Go プロセスが内部 ticker を持ち、`hermit serve` が MCP サーバとして長寿命プロセスであるのと同じ形で、毎 tick `claude -p` を 1 回起動して完了を待つ。
+
+サブエージェント方式 (#147) への回帰は明示的に禁止する — #171 で「バックグラウンドサブエージェントを cron tick ごとに spawn し続けると、長時間運用でセッションの spawn 上限を静かに枯渇させる」という失敗モードが実証済みのため、`hermit run` は Claude Code のサブエージェントを一切 spawn しない設計でなければならない。
+
+- 受け入れ条件: (1) `hermit run` サブコマンドが存在し usage 出力に記載されている、(2) 内部 ticker で周期実行し前のパスが完了してから `[agent].loop_interval` (既定 270 秒) 待って次のパスを開始する、(3) パスが長時間かかっても重複起動しない、(4) 各 tick はプロジェクトルートを cwd として `claude -p` を非対話 (permission prompt でハングしない) で起動する、(5) `.hermit/superintendent-state.json` を Go 側が所有し、PR コメント確認/Issue コメント確認/要件スイープの 3 つの since タイムスタンプは `get_loop_state`/`update_loop_state` MCP ツール経由でのみ読み書きされる、(6) 最終成功 tick 時刻を記録し設定可能な N 回連続失敗で webhook 通知する、(7) `.hermit-paused`/`.hermit-quit` を `hermit run` 自身が検知する、(8) SIGINT/SIGTERM を受けても実行中のパスを中断せずグレースフルに停止する、(9) systemd unit / launchd plist / Windows サービス登録などの OS 固有コードは追加せず常駐化方法は README の案内に留める、(10) Windows amd64 でビルド・動作する、(11) `/hermit` スラッシュコマンドは廃止せず併存させる
+- verify: test
+- 実装状況: 実装済み — `internal/runloop` (`Run`/`Options`) が ticker・重複起動防止 (1 ループ内で Invoke を直列実行するのみで並行呼び出しの余地がない構造)・グレースフルシャットダウン (shutdown context はパス開始前とインターバル待機中のみ参照し、実行中の Invoke には渡さない)・`.hermit-paused`/`.hermit-quit` 検知・失敗連続カウントに応じた webhook 通知を実装。`internal/state` が `.hermit/superintendent-state.json` の読み書き (load-modify-save、一時ファイル+rename によるアトミック書き込み) を所有。`internal/mcp/tools.go` の `get_loop_state`/`update_loop_state` ツールが 3 つの since タイムスタンプを internal/state 経由で読み書きし、Superintendent サイクルが同ファイルを直接書き込む経路は存在しない。`cmd/hermit/main.go` の `cmdRun`/`newClaudeInvoker`/`buildClaudeRunArgs` が `hermit run` サブコマンド本体・非対話 `claude` 起動 (`--dangerously-skip-permissions`)・SIGINT/SIGTERM (`signal.NotifyContext`) を実装し、`go build`/`go test` を `GOOS=windows GOARCH=amd64` で実行して Windows ビルドを確認済み。systemd/launchd/Windows サービス/tmux/Docker の常駐化案内は README「Running `hermit run` Continuously」節に追記。テストは `internal/runloop/runloop_test.go`・`internal/state/state_test.go`・`internal/mcp/req_test.go`・`cmd/hermit/run_test.go` の `TestREQ019_*`
