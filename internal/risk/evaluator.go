@@ -56,7 +56,35 @@ type Config struct {
 // harness.toml, preserving backward compatibility for existing projects.
 func DefaultConfig() Config {
 	return Config{
-		HighPaths:   []string{"cmd/", "go.mod", ".github/"},
+		// HighPaths includes HERMIT's own control-plane surfaces (the risk
+		// evaluator itself, permissions, readiness, harness.toml, .claude/,
+		// and CLAUDE.md) alongside the original cmd/go.mod/.github entries.
+		// Evaluate/EvaluateWithConfig check HighPaths before MediumPaths and
+		// return as soon as HighPaths matches (see EvaluateWithConfig below),
+		// so these control-plane prefixes take priority over the broader
+		// "internal/" MEDIUM match below -- a change confined to
+		// internal/risk/, for example, is HIGH, not MEDIUM.
+		//
+		// Crucially, this list names itself: internal/risk/ (the file you are
+		// reading right now) and harness.toml (which can override HighPaths
+		// via its [risk] section, see Merge above) are both included. That
+		// means a PR that tries to narrow this list -- e.g. to remove
+		// harness.toml or internal/risk/ from HighPaths so a future change
+		// there can auto-merge -- is itself a change to internal/risk/ and/or
+		// harness.toml, so it always trips this same HIGH classification.
+		// Do not remove internal/risk/ or harness.toml from this list; doing
+		// so would let a PR silently weaken its own guard.
+		HighPaths: []string{
+			"cmd/",
+			"go.mod",
+			".github/",
+			"internal/risk/",
+			"internal/permissions/",
+			"internal/readiness/",
+			"harness.toml",
+			".claude/",
+			"CLAUDE.md",
+		},
 		MediumPaths: []string{"internal/"},
 		// cmd/hermit/templates/ holds scaffold/doc content (CLAUDE.md.tmpl,
 		// harness.toml.tmpl, command markdown copied into user projects) that

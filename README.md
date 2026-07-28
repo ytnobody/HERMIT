@@ -193,9 +193,11 @@ No further action is needed. HERMIT handles the entire development workflow auto
 
 | Condition | Level |
 |---|---|
-| 20+ changed files / 500+ changed lines / changes in `cmd/`, `go.mod`, `.github/` | HIGH |
+| 20+ changed files / 500+ changed lines / changes in `cmd/`, `go.mod`, `.github/`, or HERMIT's own control plane (`internal/risk/`, `internal/permissions/`, `internal/readiness/`, `harness.toml`, `.claude/`, `CLAUDE.md`) | HIGH |
 | 10+ changed files / 200+ changed lines / changes in `internal/` | MEDIUM |
 | Otherwise | LOW |
+
+A PR touching only one of the control-plane paths above is always HIGH, even a single-file, single-line change, and takes priority over the broader `internal/` MEDIUM match. This is deliberate: these paths are the mechanisms that constrain HERMIT itself (including `evaluate_risk`'s own logic and the `harness.toml` `[risk]` section that can override `high_paths`), so a change to them can never be safely self-certified as auto-mergeable — it always needs a human to look at it. The list intentionally includes itself (`internal/risk/`, `harness.toml`) so that a PR attempting to remove a path from `high_paths` is itself HIGH.
 
 ---
 
@@ -220,7 +222,7 @@ superintendent = "claude-sonnet-5"   # model used for the Superintendent role
 engineer       = "claude-sonnet-5"   # model used for Engineer roles
 
 # [risk]
-# high_paths            = ["cmd/", "go.mod", ".github/"]  # HIGH risk when a changed file matches one of these prefixes
+# high_paths            = ["cmd/", "go.mod", ".github/", "internal/risk/", "internal/permissions/", "internal/readiness/", "harness.toml", ".claude/", "CLAUDE.md"]  # HIGH risk when a changed file matches one of these prefixes; defaults include HERMIT's own control-plane paths so they're always isolated from auto-merge
 # medium_paths          = ["internal/"]                   # MEDIUM risk when a changed file matches one of these prefixes
 # high_file_threshold   = 20    # HIGH risk when this many or more files changed
 # high_line_threshold   = 500   # HIGH risk when this many or more lines changed (additions + deletions)
