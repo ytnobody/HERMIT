@@ -76,3 +76,6 @@ analyst_effort         = "{{ .AnalystEffort }}"  # reasoning effort: low/medium/
 # # There is no config knob to disable the check; delete this comment block's
 # # intent by simply keeping a requirements doc at one of the default paths.
 # paths = ["REQUIREMENTS.md", "docs/requirements.md"]  # any one of these existing is OK (default shown)
+
+# [run]
+# failure_notify_threshold = 3  # `hermit run`: consecutive failed passes before a [notification] webhook fires (default: 3)

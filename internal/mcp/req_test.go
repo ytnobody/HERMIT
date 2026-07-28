@@ -526,3 +526,103 @@ func TestREQ008_MergePR_WorktreeCleanup(t *testing.T) {
 
 // errMergeFailed is a sentinel merge error for TestREQ008_MergePR_WorktreeCleanup.
 var errMergeFailed = errors.New("merge failed (test)")
+
+// TestREQ019_GetLoopState_EmptyWhenNoStateFile verifies get_loop_state
+// succeeds and reports nothing recorded yet when
+// .hermit/superintendent-state.json does not exist — the state a fresh
+// project starts in before `hermit run` or update_loop_state have ever
+// touched it.
+func TestREQ019_GetLoopState_EmptyWhenNoStateFile(t *testing.T) {
+	s, _ := newTestServerWithRoot(t, &mockGithubClient{})
+
+	result := callTool(t, s, "get_loop_state", map[string]any{})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+	var resp map[string]any
+	decodeToolResult(t, result, &resp)
+	for _, key := range []string{"pr_comments_since", "issue_comments_since", "requirements_sweep_since", "last_success_tick"} {
+		if _, ok := resp[key]; ok {
+			t.Errorf("expected %q to be absent on a fresh project, got %v", key, resp[key])
+		}
+	}
+	if cf, _ := resp["consecutive_failures"].(float64); cf != 0 {
+		t.Errorf("consecutive_failures = %v, want 0", resp["consecutive_failures"])
+	}
+}
+
+// TestREQ019_UpdateLoopState_PersistsViaMCPTool verifies the core of Issue
+// #181's ".hermit/superintendent-state.json をGo側が所有する。3つのタイムスタンプの
+// 読み書きはMCPツール経由で行う" requirement: update_loop_state writes the three
+// cadence timestamps to the Go-owned state file, get_loop_state reads them
+// back, and a partial update leaves previously-set fields untouched.
+func TestREQ019_UpdateLoopState_PersistsViaMCPTool(t *testing.T) {
+	s, root := newTestServerWithRoot(t, &mockGithubClient{})
+
+	result := callTool(t, s, "update_loop_state", map[string]any{
+		"pr_comments_since":    "2026-07-28T10:00:00Z",
+		"issue_comments_since": "2026-07-28T11:00:00Z",
+	})
+	if result.IsError {
+		t.Fatalf("update_loop_state: expected success, got error: %v", result.Content)
+	}
+
+	// The file must actually exist on disk under .hermit/, owned by Go, not
+	// hand-written by the calling session.
+	if _, err := os.Stat(filepath.Join(root, ".hermit", "superintendent-state.json")); err != nil {
+		t.Fatalf(".hermit/superintendent-state.json not created by update_loop_state: %v", err)
+	}
+
+	// Partial update: only requirements_sweep_since is set this time; the
+	// two fields set above must survive untouched.
+	result = callTool(t, s, "update_loop_state", map[string]any{
+		"requirements_sweep_since": "2026-07-28T12:00:00Z",
+	})
+	if result.IsError {
+		t.Fatalf("update_loop_state (partial): expected success, got error: %v", result.Content)
+	}
+
+	result = callTool(t, s, "get_loop_state", map[string]any{})
+	if result.IsError {
+		t.Fatalf("get_loop_state: expected success, got error: %v", result.Content)
+	}
+	var resp map[string]any
+	decodeToolResult(t, result, &resp)
+	if resp["pr_comments_since"] != "2026-07-28T10:00:00Z" {
+		t.Errorf("pr_comments_since = %v, want 2026-07-28T10:00:00Z", resp["pr_comments_since"])
+	}
+	if resp["issue_comments_since"] != "2026-07-28T11:00:00Z" {
+		t.Errorf("issue_comments_since = %v, want 2026-07-28T11:00:00Z", resp["issue_comments_since"])
+	}
+	if resp["requirements_sweep_since"] != "2026-07-28T12:00:00Z" {
+		t.Errorf("requirements_sweep_since = %v, want 2026-07-28T12:00:00Z", resp["requirements_sweep_since"])
+	}
+}
+
+// TestREQ019_UpdateLoopState_RejectsInvalidTimestamp verifies update_loop_state
+// validates its RFC3339 inputs rather than silently persisting garbage.
+func TestREQ019_UpdateLoopState_RejectsInvalidTimestamp(t *testing.T) {
+	s, _ := newTestServerWithRoot(t, &mockGithubClient{})
+
+	result := callTool(t, s, "update_loop_state", map[string]any{
+		"pr_comments_since": "not-a-timestamp",
+	})
+	if !result.IsError {
+		t.Fatalf("expected an error result for an invalid timestamp, got %v", result.Content)
+	}
+}
+
+// decodeToolResult decodes the JSON text content of a tool result into out.
+func decodeToolResult(t *testing.T, result *mcp.CallToolResult, out any) {
+	t.Helper()
+	if len(result.Content) == 0 {
+		t.Fatalf("tool result has no content")
+	}
+	tc, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("tool result content is not text: %#v", result.Content[0])
+	}
+	if err := json.Unmarshal([]byte(tc.Text), out); err != nil {
+		t.Fatalf("decoding tool result: %v", err)
+	}
+}

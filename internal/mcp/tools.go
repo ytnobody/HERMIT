@@ -17,6 +17,7 @@ import (
 	"github.com/ytnobody/hermit/internal/readiness"
 	"github.com/ytnobody/hermit/internal/requirements"
 	"github.com/ytnobody/hermit/internal/risk"
+	"github.com/ytnobody/hermit/internal/state"
 )
 
 // clarificationTrigger is the marker HERMIT looks for in Issue/PR comments to
@@ -552,6 +553,62 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 	)
 
 	s.AddTool(
+		mcp.NewTool("get_loop_state",
+			mcp.WithDescription("Returns the cadence-tracking timestamps persisted in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, and requirements_sweep_since (RFC3339, omitted if never recorded) — the 'since' values the Superintendent cycle uses to decide when it last checked PR comments, checked Issue comments, and ran the requirements sweep. Also reports last_success_tick and consecutive_failures, written by `hermit run`'s own tick loop. This file is owned by HERMIT's Go side: read/write the three cadence timestamps only via this tool and update_loop_state, never by hand-writing the JSON file."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			st, err := state.Load(state.Path(rootDir))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, _ := json.Marshal(loopStateResponse(st))
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("update_loop_state",
+			mcp.WithDescription("Updates one or more of the cadence-tracking timestamps in .hermit/superintendent-state.json: pr_comments_since, issue_comments_since, requirements_sweep_since, each an RFC3339 timestamp. Only the fields provided are changed; omitted fields are left as-is. Call the now tool first to get an authoritative current timestamp to pass in, then use this instead of writing the JSON file directly. Returns the full updated state."),
+			mcp.WithString("pr_comments_since", mcp.Description("RFC3339 timestamp to record as the last PR-review-comment check time")),
+			mcp.WithString("issue_comments_since", mcp.Description("RFC3339 timestamp to record as the last Issue-comment check time")),
+			mcp.WithString("requirements_sweep_since", mcp.Description("RFC3339 timestamp to record as the last requirements-sweep time")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			statePath := state.Path(rootDir)
+			st, err := state.Load(statePath)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if v := req.GetString("pr_comments_since", ""); v != "" {
+				t, err := time.Parse(time.RFC3339, v)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("pr_comments_since: %v", err)), nil
+				}
+				st.PRCommentsSince = &t
+			}
+			if v := req.GetString("issue_comments_since", ""); v != "" {
+				t, err := time.Parse(time.RFC3339, v)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("issue_comments_since: %v", err)), nil
+				}
+				st.IssueCommentsSince = &t
+			}
+			if v := req.GetString("requirements_sweep_since", ""); v != "" {
+				t, err := time.Parse(time.RFC3339, v)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("requirements_sweep_since: %v", err)), nil
+				}
+				st.RequirementsSweepSince = &t
+			}
+			if err := state.Save(statePath, st); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			b, _ := json.Marshal(loopStateResponse(st))
+			return mcp.NewToolResultText(string(b)), nil
+		},
+	)
+
+	s.AddTool(
 		mcp.NewTool("review_pr",
 			mcp.WithDescription("Posts a structured automated review comment on a PR based on static analysis of the diff"),
 			mcp.WithNumber("pr_number", mcp.Description("PR number"), mcp.Required()),
@@ -700,4 +757,24 @@ func registerTools(s *server.MCPServer, client githubClient, rateLimitThreshold 
 			return mcp.NewToolResultText(string(b)), nil
 		},
 	)
+}
+
+// loopStateResponse converts a state.LoopState into the JSON-friendly shape
+// returned by get_loop_state / update_loop_state: each timestamp is an
+// RFC3339 string when set, or omitted entirely when nil, so callers can
+// treat a missing key the same way as "never recorded".
+func loopStateResponse(st state.LoopState) map[string]any {
+	resp := map[string]any{
+		"consecutive_failures": st.ConsecutiveFailures,
+	}
+	setIfNotNil := func(key string, t *time.Time) {
+		if t != nil {
+			resp[key] = t.UTC().Format(time.RFC3339)
+		}
+	}
+	setIfNotNil("pr_comments_since", st.PRCommentsSince)
+	setIfNotNil("issue_comments_since", st.IssueCommentsSince)
+	setIfNotNil("requirements_sweep_since", st.RequirementsSweepSince)
+	setIfNotNil("last_success_tick", st.LastSuccessTick)
+	return resp
 }
