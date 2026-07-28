@@ -763,6 +763,47 @@ func TestWriteClaudeSettings(t *testing.T) {
 	if !strings.Contains(string(data), "Bash(*)") {
 		t.Errorf("settings.json missing Bash(*): %s", data)
 	}
+	if !strings.Contains(string(data), `"sandbox"`) {
+		t.Errorf("settings.json missing sandbox block: %s", data)
+	}
+}
+
+// TestREQ018_WriteClaudeSettings_RerunPreservesCustomPermissions is the
+// direct regression test for Issue #180's acceptance criterion that
+// re-running `hermit init` (which calls writeClaudeSettings) against a
+// project that already has a hand-tuned .claude/settings.json must not
+// destroy the existing "permissions" block.
+func TestREQ018_WriteClaudeSettings_RerunPreservesCustomPermissions(t *testing.T) {
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(prev)
+
+	if err := os.MkdirAll(".claude", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := `{"permissions": {"allow": ["Bash(git *)"]}}`
+	if err := os.WriteFile(filepath.Join(".claude", "settings.json"), []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeClaudeSettings(); err != nil {
+		t.Fatalf("writeClaudeSettings (rerun): %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("settings.json missing after rerun: %v", err)
+	}
+	if !strings.Contains(string(data), "Bash(git *)") {
+		t.Errorf("rerun destroyed the existing custom permissions.allow: %s", data)
+	}
+	if strings.Contains(string(data), "Bash(*)") {
+		t.Errorf("rerun must not widen the existing custom allow-list to Bash(*): %s", data)
+	}
+	if !strings.Contains(string(data), `"sandbox"`) {
+		t.Errorf("rerun should still add the missing sandbox block: %s", data)
+	}
 }
 
 // --- writeTemplate ---

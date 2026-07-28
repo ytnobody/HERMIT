@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -130,7 +131,108 @@ func runChecks() []checkResult {
 		passed: err == nil,
 	})
 
+	// Checks: sandbox configuration in .claude/settings.json (REQ-018). These
+	// are warnings, not hard failures, so `hermit doctor` keeps passing on
+	// projects initialized before the sandbox recommendation existed.
+	results = append(results, checkSandboxSettings(".claude/settings.json")...)
+
 	return results
+}
+
+// sandboxSettingsRaw mirrors just the fields of the "sandbox" block in
+// .claude/settings.json that checkSandboxSettings inspects. It is decoded
+// independently of internal/permissions.Settings so a malformed or
+// hand-edited settings.json (missing fields, extra keys) never breaks
+// `hermit doctor` itself — unmarshal errors are treated as "not configured".
+type sandboxSettingsRaw struct {
+	Sandbox *struct {
+		Enabled                  *bool    `json:"enabled"`
+		AllowUnsandboxedCommands *bool    `json:"allowUnsandboxedCommands"`
+		ExcludedCommands         []string `json:"excludedCommands"`
+	} `json:"sandbox"`
+}
+
+// checkSandboxSettings inspects the "sandbox" block of the settings.json at
+// path and warns about the three ways it can end up not actually restricting
+// the Engineer's Bash tool (see Issue #180 / REQUIREMENTS.md REQ-018):
+//
+//   - sandbox.enabled is false or missing — the whole block is inert
+//   - allowUnsandboxedCommands is true or missing — defaults to true in
+//     Claude Code, which lets commands opt out of the sandbox entirely
+//   - excludedCommands has entries — those commands bypass the sandbox
+func checkSandboxSettings(path string) []checkResult {
+	data, err := os.ReadFile(path)
+	fileMissing := os.IsNotExist(err)
+
+	var cfg sandboxSettingsRaw
+	if err == nil {
+		// Best-effort: malformed JSON is handled the same as "no sandbox
+		// block configured" rather than failing doctor outright.
+		_ = json.Unmarshal(data, &cfg)
+	}
+
+	missingFileDetail := path + " not found (run `hermit init`)"
+	missingBlockDetail := "sandbox block missing from " + path
+
+	enabled := cfg.Sandbox != nil && cfg.Sandbox.Enabled != nil && *cfg.Sandbox.Enabled
+	enabledDetail := ""
+	switch {
+	case enabled:
+		// no detail needed
+	case fileMissing:
+		enabledDetail = missingFileDetail
+	case cfg.Sandbox == nil:
+		enabledDetail = missingBlockDetail
+	case cfg.Sandbox.Enabled == nil:
+		enabledDetail = "sandbox.enabled not set"
+	default:
+		enabledDetail = "sandbox.enabled is false"
+	}
+
+	blocked := cfg.Sandbox != nil && cfg.Sandbox.AllowUnsandboxedCommands != nil && !*cfg.Sandbox.AllowUnsandboxedCommands
+	blockedDetail := ""
+	switch {
+	case blocked:
+		// no detail needed
+	case fileMissing:
+		blockedDetail = missingFileDetail
+	case cfg.Sandbox == nil:
+		blockedDetail = missingBlockDetail
+	case cfg.Sandbox.AllowUnsandboxedCommands == nil:
+		blockedDetail = "allowUnsandboxedCommands not set (defaults to true in Claude Code, which makes the sandbox block a no-op)"
+	default:
+		blockedDetail = "allowUnsandboxedCommands is true (defeats the sandbox; set it to false)"
+	}
+
+	var excluded []string
+	if cfg.Sandbox != nil {
+		excluded = cfg.Sandbox.ExcludedCommands
+	}
+	excludedDetail := ""
+	if len(excluded) > 0 {
+		excludedDetail = "sandbox.excludedCommands bypasses the sandbox for: " + strings.Join(excluded, ", ")
+	}
+
+	return []checkResult{
+		{
+			name:   "sandbox.enabled is true",
+			passed: true,
+			warn:   !enabled,
+			detail: enabledDetail,
+		},
+		{
+			name:   "allowUnsandboxedCommands is false",
+			passed: true,
+			warn:   !blocked,
+			detail: blockedDetail,
+		},
+		{
+			name:   "sandbox.excludedCommands is empty",
+			passed: true,
+			warn:   len(excluded) > 0,
+			detail: excludedDetail,
+		},
+	}
 }
 
 func cmdDoctor() {

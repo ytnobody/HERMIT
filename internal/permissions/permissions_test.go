@@ -308,3 +308,259 @@ func TestDefaultSettingsJSONIsValid(t *testing.T) {
 			len(uncovered), strings.Join(uncovered, ", "))
 	}
 }
+
+// TestREQ018_DefaultSandboxSettings_AllowUnsandboxedCommandsFalse verifies
+// the sandbox default explicitly disables the "allowUnsandboxedCommands"
+// escape hatch. Claude Code defaults this field to true, so hermit must set
+// it to false explicitly or the rest of the sandbox block is effectively
+// optional.
+func TestREQ018_DefaultSandboxSettings_AllowUnsandboxedCommandsFalse(t *testing.T) {
+	sb := permissions.DefaultSandboxSettings()
+	if !sb.Enabled {
+		t.Error("expected sandbox.enabled = true")
+	}
+	if sb.AllowUnsandboxedCommands {
+		t.Error("expected sandbox.allowUnsandboxedCommands = false")
+	}
+}
+
+// TestREQ018_DefaultSandboxSettings_GithubTokenMaskedNotDenied verifies
+// GITHUB_TOKEN is exposed via "mask" + injectHosts rather than "deny": gh CLI
+// needs the real token to reach api.github.com, so "deny" would break `gh pr
+// create` and friends.
+func TestREQ018_DefaultSandboxSettings_GithubTokenMaskedNotDenied(t *testing.T) {
+	sb := permissions.DefaultSandboxSettings()
+
+	var tokenVar *permissions.SandboxCredentialEnvVar
+	for i := range sb.Credentials.EnvVars {
+		if sb.Credentials.EnvVars[i].Name == "GITHUB_TOKEN" {
+			tokenVar = &sb.Credentials.EnvVars[i]
+			break
+		}
+	}
+	if tokenVar == nil {
+		t.Fatal("expected GITHUB_TOKEN entry in sandbox.credentials.envVars")
+	}
+	if tokenVar.Mode == "deny" {
+		t.Error("GITHUB_TOKEN must not be mode=deny (breaks gh CLI); expected mode=mask")
+	}
+	if tokenVar.Mode != "mask" {
+		t.Errorf("expected GITHUB_TOKEN mode=mask, got %q", tokenVar.Mode)
+	}
+	found := false
+	for _, h := range tokenVar.InjectHosts {
+		if h == "api.github.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected injectHosts to include api.github.com, got %v", tokenVar.InjectHosts)
+	}
+	// mask+injectHosts requires tlsTerminate to be configured.
+	if sb.Network.TLSTerminate == nil {
+		t.Error("expected network.tlsTerminate to be set (required for envVar host-scoped injection)")
+	}
+}
+
+// TestREQ018_DefaultSandboxSettings_GoToolchainDomainsAllowed verifies the Go
+// module proxy/sum/storage hosts are present in allowedDomains, since `go
+// build`/`go test` need network access to fetch dependencies. This is a
+// structural check; go.mod/go.sum actually resolving through these hosts is
+// verified by `go test ./...` succeeding in CI/dev, per the acceptance
+// criteria on Issue #180.
+func TestREQ018_DefaultSandboxSettings_GoToolchainDomainsAllowed(t *testing.T) {
+	sb := permissions.DefaultSandboxSettings()
+	want := []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "*.github.com"}
+	for _, w := range want {
+		found := false
+		for _, d := range sb.Network.AllowedDomains {
+			if d == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q in network.allowedDomains, got %v", w, sb.Network.AllowedDomains)
+		}
+	}
+}
+
+// TestREQ018_DefaultSettingsJSON_IncludesSandbox verifies the JSON hermit
+// init writes for a fresh project contains the sandbox block described in
+// Issue #180, in addition to the existing permissions allow-list.
+func TestREQ018_DefaultSettingsJSON_IncludesSandbox(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "settings.json")
+	if err := os.WriteFile(path, permissions.DefaultSettingsJSON(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := permissions.LoadSettings(path)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if s.Sandbox == nil {
+		t.Fatal("expected non-nil Sandbox block in DefaultSettingsJSON output")
+	}
+	if !s.Sandbox.Enabled || s.Sandbox.AllowUnsandboxedCommands {
+		t.Errorf("expected enabled=true, allowUnsandboxedCommands=false, got %+v", s.Sandbox)
+	}
+}
+
+// TestREQ018_MergeDefaultSettings_FreshFile verifies MergeDefaultSettings
+// behaves like DefaultSettingsJSON when no settings.json exists yet.
+func TestREQ018_MergeDefaultSettings_FreshFile(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "settings.json")
+
+	merged, err := permissions.MergeDefaultSettings(path)
+	if err != nil {
+		t.Fatalf("MergeDefaultSettings: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(merged, &raw); err != nil {
+		t.Fatalf("merged output is not valid JSON: %v", err)
+	}
+	if _, ok := raw["sandbox"]; !ok {
+		t.Error("expected sandbox key in merged output for a fresh file")
+	}
+	if _, ok := raw["permissions"]; !ok {
+		t.Error("expected permissions key in merged output for a fresh file")
+	}
+}
+
+// TestREQ018_MergeDefaultSettings_PreservesExistingPermissions is the direct
+// regression test for the Issue #180 acceptance criterion: re-running
+// `hermit init` (which calls MergeDefaultSettings) against a project that
+// already has a hand-tuned .claude/settings.json must not destroy the
+// existing "permissions" block, even though it lacks Bash(*) and looks
+// nothing like hermit's own default.
+func TestREQ018_MergeDefaultSettings_PreservesExistingPermissions(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "settings.json")
+	existing := `{
+  "permissions": {
+    "allow": ["Bash(git *)", "Bash(go *)"]
+  },
+  "someOtherProjectKey": {"foo": "bar"}
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := permissions.MergeDefaultSettings(path)
+	if err != nil {
+		t.Fatalf("MergeDefaultSettings: %v", err)
+	}
+
+	var s permissions.Settings
+	if err := json.Unmarshal(merged, &s); err != nil {
+		t.Fatalf("unmarshal merged settings: %v", err)
+	}
+	if len(s.Permissions.Allow) != 2 || s.Permissions.Allow[0] != "Bash(git *)" || s.Permissions.Allow[1] != "Bash(go *)" {
+		t.Errorf("expected existing custom permissions.allow to survive unchanged, got %v", s.Permissions.Allow)
+	}
+	if (&s).IsBashAllowed("gh pr create") {
+		t.Error("merge must not silently widen the existing (narrower) allow-list")
+	}
+
+	// The sandbox block should have been added since it was absent.
+	if s.Sandbox == nil || !s.Sandbox.Enabled || s.Sandbox.AllowUnsandboxedCommands {
+		t.Errorf("expected sandbox block to be filled in with hermit defaults, got %+v", s.Sandbox)
+	}
+
+	// Unrelated top-level keys must survive too.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &raw); err != nil {
+		t.Fatalf("unmarshal merged: %v", err)
+	}
+	if _, ok := raw["someOtherProjectKey"]; !ok {
+		t.Error("expected unrelated top-level key 'someOtherProjectKey' to survive the merge")
+	}
+}
+
+// TestREQ018_MergeDefaultSettings_PreservesExistingSandbox verifies a
+// project that has already customized its sandbox block (e.g. added an
+// extra allowed domain) keeps that customization on a re-run of `hermit
+// init`, rather than being clobbered back to hermit's defaults.
+func TestREQ018_MergeDefaultSettings_PreservesExistingSandbox(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "settings.json")
+	existing := `{
+  "permissions": {"allow": ["Bash(*)"]},
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "network": {"tlsTerminate": {}, "allowedDomains": ["*.github.com", "registry.npmjs.org"]}
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	merged, err := permissions.MergeDefaultSettings(path)
+	if err != nil {
+		t.Fatalf("MergeDefaultSettings: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(merged, &raw); err != nil {
+		t.Fatalf("unmarshal merged: %v", err)
+	}
+	sandbox, ok := raw["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatal("expected sandbox object in merged output")
+	}
+	network, ok := sandbox["network"].(map[string]any)
+	if !ok {
+		t.Fatal("expected sandbox.network object in merged output")
+	}
+	domains, ok := network["allowedDomains"].([]any)
+	if !ok {
+		t.Fatal("expected sandbox.network.allowedDomains array in merged output")
+	}
+	found := false
+	for _, d := range domains {
+		if d == "registry.npmjs.org" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pre-existing custom domain 'registry.npmjs.org' to survive the merge, got %v", domains)
+	}
+}
+
+// TestREQ018_MergeDefaultSettings_MissingFileError verifies the underlying
+// os.ReadFile error path other than "not exist" is surfaced rather than
+// swallowed (e.g. a permission-denied directory component). We simulate this
+// by pointing at a path whose parent is a file, not a directory, which
+// produces an ENOTDIR rather than ENOENT.
+func TestREQ018_MergeDefaultSettings_MissingFileError(t *testing.T) {
+	tmp := t.TempDir()
+	notADir := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(notADir, "settings.json")
+
+	_, err := permissions.MergeDefaultSettings(path)
+	if err == nil {
+		t.Fatal("expected an error when the parent path is not a directory")
+	}
+}
+
+// TestREQ018_MergeDefaultSettings_InvalidJSONError verifies a malformed
+// existing settings.json produces an error rather than silently discarding
+// the file's content.
+func TestREQ018_MergeDefaultSettings_InvalidJSONError(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "settings.json")
+	if err := os.WriteFile(path, []byte("not valid json {{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := permissions.MergeDefaultSettings(path)
+	if err == nil {
+		t.Fatal("expected an error for malformed existing settings.json")
+	}
+}
