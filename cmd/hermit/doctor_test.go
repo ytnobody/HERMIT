@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ytnobody/hermit/internal/permissions"
 )
 
 // captureDoctor runs cmdDoctor() capturing stdout, returning output and whether it exited.
@@ -28,8 +30,8 @@ func captureDoctorOutput(t *testing.T) string {
 
 func TestRunChecks_AllFields(t *testing.T) {
 	results := runChecks()
-	if len(results) != 6 {
-		t.Errorf("expected 6 checks, got %d", len(results))
+	if len(results) != 9 {
+		t.Errorf("expected 9 checks, got %d", len(results))
 	}
 
 	names := make([]string, len(results))
@@ -44,6 +46,9 @@ func TestRunChecks_AllFields(t *testing.T) {
 		"GITHUB_TOKEN is available",
 		"harness.toml exists with owner/repo",
 		"Claude Code (claude) is installed",
+		"sandbox.enabled is true",
+		"allowUnsandboxedCommands is false",
+		"sandbox.excludedCommands is empty",
 	}
 	for i, want := range expected {
 		if i >= len(names) {
@@ -330,4 +335,137 @@ repo  = "test-repo"
 	cmd.Env = append(os.Environ(), "TEST_MAIN_DOCTOR=1", "GITHUB_TOKEN=testtoken123")
 	// Ignore exit status since some checks may fail in CI
 	_ = cmd.Run()
+}
+
+// TestREQ018_CheckSandboxSettings_FileMissing verifies all three sandbox
+// checks warn (without failing doctor) when .claude/settings.json does not
+// exist at all, e.g. a project that has never run `hermit init`.
+func TestREQ018_CheckSandboxSettings_FileMissing(t *testing.T) {
+	dir := t.TempDir()
+	results := checkSandboxSettings(filepath.Join(dir, "does-not-exist.json"))
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if !r.passed {
+			t.Errorf("%s: expected passed=true (warning, not failure)", r.name)
+		}
+	}
+	// enabled / allowUnsandboxedCommands can't be verified when the file is
+	// missing entirely, so both warn.
+	if !results[0].warn || results[0].detail == "" {
+		t.Errorf("sandbox.enabled: expected warn=true with a detail when settings.json is missing")
+	}
+	if !results[1].warn || results[1].detail == "" {
+		t.Errorf("allowUnsandboxedCommands: expected warn=true with a detail when settings.json is missing")
+	}
+	// excludedCommands is vacuously empty when there's no file to read from,
+	// so it must NOT warn (nothing bypasses a sandbox that was never
+	// configured to exist).
+	if results[2].warn {
+		t.Errorf("sandbox.excludedCommands: expected warn=false when settings.json is missing (nothing to report)")
+	}
+}
+
+// TestREQ018_CheckSandboxSettings_NoSandboxBlock verifies the checks warn
+// when settings.json exists but has no "sandbox" key at all (a
+// pre-Issue-#180 hermit init output).
+func TestREQ018_CheckSandboxSettings_NoSandboxBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"permissions":{"allow":["Bash(*)"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results := checkSandboxSettings(path)
+	if !results[0].warn {
+		t.Error("sandbox.enabled: expected warn=true when sandbox block is absent")
+	}
+	if !results[1].warn {
+		t.Error("allowUnsandboxedCommands: expected warn=true when sandbox block is absent")
+	}
+	if results[2].warn {
+		t.Error("sandbox.excludedCommands: expected warn=false when sandbox block is absent (nothing to report)")
+	}
+}
+
+// TestREQ018_CheckSandboxSettings_Recommended verifies hermit's own
+// recommended sandbox config (enabled, allowUnsandboxedCommands=false, no
+// excludedCommands) produces zero warnings.
+func TestREQ018_CheckSandboxSettings_Recommended(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	data := permissions.DefaultSettingsJSON()
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results := checkSandboxSettings(path)
+	for _, r := range results {
+		if r.warn {
+			t.Errorf("%s: expected warn=false for hermit's own recommended config, detail: %s", r.name, r.detail)
+		}
+	}
+}
+
+// TestREQ018_CheckSandboxSettings_UnsandboxedAllowed verifies the second
+// check warns specifically when allowUnsandboxedCommands is true (the
+// default in Claude Code, which makes "enabled: true" a no-op).
+func TestREQ018_CheckSandboxSettings_UnsandboxedAllowed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	content := `{"sandbox":{"enabled":true,"allowUnsandboxedCommands":true}}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results := checkSandboxSettings(path)
+	if results[0].warn {
+		t.Error("expected sandbox.enabled check to pass without warning")
+	}
+	if !results[1].warn {
+		t.Error("expected allowUnsandboxedCommands=true to be flagged")
+	}
+	if !strings.Contains(results[1].detail, "true") {
+		t.Errorf("expected detail to explain allowUnsandboxedCommands is true, got %q", results[1].detail)
+	}
+}
+
+// TestREQ018_CheckSandboxSettings_ExcludedCommands verifies the third check
+// warns and names the offending commands when excludedCommands is non-empty.
+func TestREQ018_CheckSandboxSettings_ExcludedCommands(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	content := `{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"excludedCommands":["curl","rm -rf"]}}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results := checkSandboxSettings(path)
+	if results[0].warn || results[1].warn {
+		t.Error("expected enabled/allowUnsandboxedCommands checks to pass without warning")
+	}
+	if !results[2].warn {
+		t.Error("expected excludedCommands check to warn")
+	}
+	if !strings.Contains(results[2].detail, "curl") || !strings.Contains(results[2].detail, "rm -rf") {
+		t.Errorf("expected detail to name the excluded commands, got %q", results[2].detail)
+	}
+}
+
+// TestREQ018_CheckSandboxSettings_MalformedJSON verifies malformed JSON is
+// treated as "not configured" (all three checks warn) rather than panicking
+// or crashing `hermit doctor`.
+func TestREQ018_CheckSandboxSettings_MalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("not valid json {{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results := checkSandboxSettings(path)
+	if !results[0].warn {
+		t.Error("sandbox.enabled: expected warn=true for malformed settings.json")
+	}
+	if !results[1].warn {
+		t.Error("allowUnsandboxedCommands: expected warn=true for malformed settings.json")
+	}
+	if results[2].warn {
+		t.Error("sandbox.excludedCommands: expected warn=false for malformed settings.json (nothing to report)")
+	}
 }

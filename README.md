@@ -93,7 +93,9 @@ Generated files:
 - `harness.toml` — Project configuration (shared with the team)
 - `CLAUDE.md` — Role definitions for Superintendent / Engineer
 - `.github/ISSUE_TEMPLATE/hermit-task.md` — GitHub Issue template for well-structured tasks
-- `.claude/settings.json` — Claude Code permission settings for autonomous operation
+- `.claude/settings.json` — Claude Code permission settings for autonomous operation, plus a recommended `sandbox` block (see "Sandboxing the Engineer" below)
+
+Re-running `hermit init` on an already-initialized project never overwrites an existing `.claude/settings.json` wholesale: any top-level key you've already customized (most importantly `permissions`) is left exactly as-is, and only keys that are entirely missing (e.g. `sandbox`, on a project initialized before it was added) are filled in with hermit's defaults.
 
 Edit the "Coding Guidelines" section in `CLAUDE.md` to match your project.
 
@@ -110,6 +112,54 @@ Edit the "Coding Guidelines" section in `CLAUDE.md` to match your project.
   - **(b) Disable auto-merge entirely.** Skip the `merge_pr` step regardless of `evaluate_risk`'s result, and require a human to review and merge every PR HERMIT opens, even ones classified LOW or MEDIUM risk. This bounds the blast radius of any adversarial instruction to "opened a PR," not "got code merged."
   - In practice, many public-repo operators will want both: trusted-author Issues *and* human-reviewed merges.
 - **Future work (not yet implemented):** an Issue-author allowlist (e.g. only process Issues from repository collaborators or an explicit list of GitHub usernames) is being considered as a built-in mitigation. Until it exists, use the operating modes above.
+
+### Sandboxing the Engineer
+
+The Engineer runs with `Bash(*)` permission — unrestricted shell access — on the machine running Claude Code, because an allow-list of individual commands was tried and rejected (Issue #138: every time a new tool or command shape showed up that the allow-list hadn't anticipated, the loop either stalled on a confirmation prompt or someone widened the list until it was `Bash(*)` in practice anyway). Instead of enumerating which commands are allowed, `hermit init` generates a `sandbox` block in `.claude/settings.json` that narrows *what the Engineer can reach*, regardless of which command it runs:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "tlsTerminate": {},
+      "allowedDomains": ["*.github.com", "proxy.golang.org", "sum.golang.org", "storage.googleapis.com"]
+    },
+    "credentials": {
+      "files": [
+        { "path": "~/.ssh", "mode": "deny" },
+        { "path": "~/.aws/credentials", "mode": "deny" }
+      ],
+      "envVars": [
+        { "name": "GITHUB_TOKEN", "mode": "mask", "injectHosts": ["api.github.com"] }
+      ]
+    }
+  }
+}
+```
+
+A few details worth knowing if you edit this block by hand:
+
+- **`allowUnsandboxedCommands` defaults to `true` in Claude Code.** If you omit it (or leave it `true`), the sandbox is effectively optional — a command can simply opt out. `hermit init` always writes it as `false`; keep it that way.
+- **`GITHUB_TOKEN` must be `"mode": "mask"` with `injectHosts`, never `"mode": "deny"`.** `gh` (and therefore `gh pr create`, `gh issue comment`, etc., which the Engineer needs to do its job) requires the real token when talking to `api.github.com`. `"deny"` breaks it outright. `"mask"` hides the value everywhere else and only injects the real token on requests to the hosts listed in `injectHosts`; this requires `network.tlsTerminate` to be present (even as `{}`), since Claude Code needs to terminate TLS to inspect the destination host before deciding whether to inject.
+- **`network.allowedDomains` must cover your dependency graph, not just GitHub.** For a Go project this means the module proxy/sum/storage hosts (`proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com`) in addition to `*.github.com`, or `go build`/`go test`/`go mod download` will fail under the sandbox. Verify the list by actually running your project's test command with the sandbox enabled — don't assume it's complete.
+
+**Scope and precedence — read this before treating the sandbox as an enforcement mechanism.** Claude Code settings are layered (managed > CLI flags > local project > project > user), and different key *shapes* combine across that stack differently:
+
+- **Boolean keys** (like `sandbox.enabled`, `sandbox.allowUnsandboxedCommands`) resolve by precedence: the highest-precedence scope that sets the key wins outright. A project-scoped `.claude/settings.json` beats a user-scoped `~/.claude/settings.json`.
+- **Array keys** (like `sandbox.excludedCommands`, `permissions.allow`, `permissions.deny` — anything that's a list of patterns) are **merged, additively, across every scope** that sets them. Nothing lower in the stack can *remove* an entry a higher scope added, but a lower scope can freely *add* entries a higher scope didn't ask for.
+
+The practical consequence: a `sandbox` block placed in `.claude/settings.json` (project scope, the default `hermit init` target) constrains the Engineer only as long as the Engineer doesn't touch it. But the Engineer's job is to open PRs against this very repository — including PRs that edit `.claude/settings.json` itself, add an entry to `sandbox.excludedCommands`, or otherwise widen the array-merged keys from project scope. Nothing in a project-scoped sandbox config stops the Engineer from proposing (and, if auto-merge is on for LOW/MEDIUM risk PRs, landing) exactly that change. In other words: project settings are a strong default, not an enforcement boundary against the agent they're meant to constrain.
+
+**To actually enforce the sandbox against the Engineer, you need managed settings** — a settings file outside the repository, deployed by an admin/MDM process the Engineer has no write access to, which sits above project scope in the precedence stack. Two managed-settings flags close the remaining loophole in the array-merge behavior described above:
+
+- **`allowManagedReadPathsOnly`** — restricts filesystem reads to paths the managed config explicitly allows, so a project-scope (or Engineer-authored) change can't widen readable paths beyond what the managed config permits.
+- **`allowManagedDomainsOnly`** — restricts network access to domains the managed config explicitly allows, closing the equivalent hole for `network.allowedDomains`.
+
+hermit does not currently generate a managed settings file — `hermit init` only ever writes to the project's own `.claude/settings.json`, which (per the above) the Engineer can eventually influence. Automating managed-settings generation, and wiring up `allowManagedReadPathsOnly` / `allowManagedDomainsOnly`, is tracked separately (see Issue #179); until that lands, the project-scope sandbox block here is best understood as raising the cost of an adversarial or buggy Engineer action, not as a hard boundary.
+
+`hermit doctor` checks the generated `.claude/settings.json` for the two most common ways this block ends up not doing anything (`sandbox.enabled` false/missing, `allowUnsandboxedCommands` true/missing) plus a non-empty `sandbox.excludedCommands` (which reopens a hole per command listed there); see `hermit doctor` below.
 
 ---
 
@@ -390,8 +440,9 @@ Runs a series of environment checks and reports pass/fail for each:
 - `GITHUB_TOKEN` is available (from environment or `gh auth token`)
 - `harness.toml` exists with `owner` and `repo` filled in
 - `claude` (Claude Code) is installed
+- `.claude/settings.json` sandbox configuration (warnings, non-fatal — see "Sandboxing the Engineer" above): `sandbox.enabled` is true, `allowUnsandboxedCommands` is false, `sandbox.excludedCommands` is empty
 
-Exits with a non-zero status if any check fails.
+Exits with a non-zero status if any check fails. The sandbox checks are warnings and never cause a non-zero exit on their own, so `hermit doctor` still passes on projects initialized before the sandbox recommendation existed.
 
 ### `hermit dry-run`
 

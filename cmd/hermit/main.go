@@ -848,7 +848,16 @@ func writeClaudeSettings() error {
 	if err := os.MkdirAll(".claude", 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(".claude", "settings.json"), permissions.DefaultSettingsJSON(), 0o644)
+	path := filepath.Join(".claude", "settings.json")
+	// MergeDefaultSettings preserves any existing "permissions" (and other)
+	// keys from a prior `hermit init` run, only filling in a missing
+	// "sandbox" block. Never unconditionally overwrite the file — a project
+	// may have hand-tuned its permissions since the last init.
+	merged, err := permissions.MergeDefaultSettings(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, merged, 0o644)
 }
 
 // writeIssueTemplate creates .github/ISSUE_TEMPLATE/hermit-task.md in the
