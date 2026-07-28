@@ -242,19 +242,24 @@ func TestCmdQuitFatal_WriteError(t *testing.T) {
 	_ = catchFatal(t, func() { cmdQuit() })
 }
 
-// --- cmdResume fatal path (non-empty directory) ---
+// --- cmdResume fatal path (state file unreadable) ---
 
-func TestCmdResumeFatal_RemoveNonEmpty(t *testing.T) {
+func TestCmdResumeFatal_StateLoadError(t *testing.T) {
 	dir := t.TempDir()
 	prev, _ := os.Getwd()
 	os.Chdir(dir)
 	defer os.Chdir(prev)
 
-	os.MkdirAll(filepath.Join(pauseFile, "child"), 0o755)
+	// Create .hermit as a regular file (not a directory) so state.Load's
+	// os.ReadFile(".hermit/superintendent-state.json") fails with ENOTDIR
+	// instead of the usual "missing file -> zero value" case.
+	if err := os.WriteFile(".hermit", []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	msg := catchFatal(t, func() { cmdResume() })
 	if msg == "" {
-		t.Error("expected fatal for non-empty directory removal")
+		t.Error("expected fatal when the state file cannot be read")
 	}
 }
 
